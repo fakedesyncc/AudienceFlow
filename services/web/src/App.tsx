@@ -15,13 +15,14 @@ import {
   Search,
   Server,
   ShieldCheck,
+  Smartphone,
   UserRound,
   Users,
   Wifi,
   WifiOff,
   Wrench,
 } from 'lucide-react';
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Area,
   AreaChart,
@@ -46,6 +47,7 @@ import {
   login,
   parseLiveMessage,
   saveRuntimeConfig,
+  updateCamera,
 } from './api';
 import type {
   AuthSession,
@@ -61,7 +63,7 @@ import type {
   UserView,
 } from './types';
 
-type View = 'monitoring' | 'overview' | 'rooms' | 'cameras' | 'users';
+type View = 'monitoring' | 'overview' | 'rooms' | 'cameras' | 'mobile' | 'users';
 type LiveState = 'presentation' | 'polling' | 'live' | 'offline';
 
 interface TelemetryEvent {
@@ -72,12 +74,35 @@ interface TelemetryEvent {
   status: CurrentAttendance['status'] | 'info';
 }
 
+interface PreviewState {
+  ready: boolean;
+  source: string;
+  detector: string;
+  count: number;
+  confidence: number;
+  fps: number;
+  updated_at: string | null;
+}
+
 const sessionStorageKey = 'audienceflow.session';
 const roleLabels: Record<Role, string> = {
   ADMIN: 'Администратор',
   TECHNICIAN: 'Техник',
   TEACHER: 'Преподаватель',
 };
+
+const cameraSourcePresets: Array<{
+  id: string;
+  label: string;
+  sourceUrl: string;
+  streamType: CameraType['streamType'];
+}> = [
+  { id: 'sample', label: 'Public sample video', sourceUrl: 'sample', streamType: 'sample' },
+  { id: 'device0', label: 'Камера компьютера device:0', sourceUrl: 'device:0', streamType: 'device' },
+  { id: 'phone', label: 'Телефон как IP/MJPEG камера', sourceUrl: 'phone:http://192.168.1.10:8080/video', streamType: 'mjpeg' },
+  { id: 'rtsp', label: 'RTSP камера', sourceUrl: 'rtsp://camera-host/live', streamType: 'rtsp' },
+  { id: 'file', label: 'Локальный видеофайл', sourceUrl: '/absolute/path/to/video.mp4', streamType: 'file' },
+];
 
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => restoreSession());
@@ -196,6 +221,7 @@ export function App() {
     { id: 'overview' as View, label: 'Аналитика', icon: Activity, enabled: true },
     { id: 'rooms' as View, label: 'Аудитории', icon: DoorOpen, enabled: true },
     { id: 'cameras' as View, label: 'Камеры', icon: Camera, enabled: true },
+    { id: 'mobile' as View, label: 'Mobile', icon: Smartphone, enabled: true },
     { id: 'users' as View, label: 'Доступ', icon: Users, enabled: isAdmin },
   ].filter((item) => item.enabled);
 
@@ -228,6 +254,15 @@ export function App() {
     }
     const camera = await createCamera(session, payload);
     setCameras((items) => [...items, camera]);
+    await loadData();
+  }
+
+  async function handleUpdateCamera(id: number, payload: CreateCameraPayload) {
+    if (!session) {
+      return;
+    }
+    const camera = await updateCamera(session, id, payload);
+    setCameras((items) => items.map((item) => (item.id === id ? camera : item)));
     await loadData();
   }
 
@@ -351,8 +386,10 @@ export function App() {
               rooms={rooms}
               canManage={Boolean(canManageInfrastructure)}
               onCreate={handleCreateCamera}
+              onUpdate={handleUpdateCamera}
             />
           )}
+          {activeView === 'mobile' && <MobileView />}
           {activeView === 'users' && isAdmin && <UsersView users={users} onCreate={handleCreateUser} />}
         </section>
       </main>
@@ -909,17 +946,28 @@ function CamerasView({
   rooms,
   canManage,
   onCreate,
+  onUpdate,
 }: {
   cameras: CameraType[];
   rooms: Room[];
   canManage: boolean;
   onCreate: (payload: CreateCameraPayload) => Promise<void>;
+  onUpdate: (id: number, payload: CreateCameraPayload) => Promise<void>;
 }) {
+  const emptyForm = useMemo<CreateCameraPayload>(() => ({
+    roomId: rooms[0]?.id ?? 1,
+    name: '',
+    sourceUrl: 'sample',
+    streamType: 'sample',
+    status: 'offline',
+    enabled: true,
+  }), [rooms]);
+  const [selectedCameraId, setSelectedCameraId] = useState<number | null>(null);
   const [form, setForm] = useState<CreateCameraPayload>({
     roomId: rooms[0]?.id ?? 1,
     name: '',
-    sourceUrl: '',
-    streamType: 'rtsp',
+    sourceUrl: 'sample',
+    streamType: 'sample',
     status: 'offline',
     enabled: true,
   });
@@ -932,8 +980,29 @@ function CamerasView({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await onCreate(form);
-    setForm((value) => ({ ...value, name: '', sourceUrl: '', status: 'offline' }));
+    if (selectedCameraId === null) {
+      await onCreate(form);
+      setForm({ ...emptyForm, roomId: form.roomId });
+      return;
+    }
+    await onUpdate(selectedCameraId, form);
+  }
+
+  function selectCamera(camera: CameraType) {
+    setSelectedCameraId(camera.id);
+    setForm({
+      roomId: camera.roomId,
+      name: camera.name,
+      sourceUrl: camera.sourceUrl ?? '',
+      streamType: camera.streamType,
+      status: camera.status,
+      enabled: camera.enabled,
+    });
+  }
+
+  function newCamera() {
+    setSelectedCameraId(null);
+    setForm({ ...emptyForm, roomId: form.roomId });
   }
 
   return (
@@ -945,7 +1014,12 @@ function CamerasView({
         </div>
         <div className="camera-list">
           {cameras.map((camera) => (
-            <article className="camera-row" key={camera.id}>
+            <button
+              type="button"
+              className={camera.id === selectedCameraId ? 'camera-row selected' : 'camera-row'}
+              key={camera.id}
+              onClick={() => selectCamera(camera)}
+            >
               <div className="camera-icon">
                 {camera.status === 'online' ? <Wifi size={18} /> : <WifiOff size={18} />}
               </div>
@@ -955,7 +1029,7 @@ function CamerasView({
                 <code>{camera.sourceUrl ?? 'источник скрыт'}</code>
               </div>
               <StatusBadge status={camera.status} />
-            </article>
+            </button>
           ))}
         </div>
       </section>
@@ -963,10 +1037,34 @@ function CamerasView({
       {canManage && (
         <section className="panel form-panel">
           <div className="panel-header">
-            <h2>Подключить камеру</h2>
-            <Wrench size={20} />
+            <div>
+              <h2>{selectedCameraId === null ? 'Подключить камеру' : 'Редактировать источник'}</h2>
+              <span>Источник отвечает за поток, из которого worker считает людей.</span>
+            </div>
+            <button type="button" className="icon-button" onClick={newCamera} title="Новая камера">
+              <Plus size={17} />
+            </button>
           </div>
           <form onSubmit={submit} className="stacked-form">
+            <label>
+              Быстрый профиль
+              <select
+                value=""
+                onChange={(event) => {
+                  const preset = cameraSourcePresets.find((item) => item.id === event.target.value);
+                  if (preset) {
+                    setForm((value) => ({ ...value, sourceUrl: preset.sourceUrl, streamType: preset.streamType }));
+                  }
+                }}
+              >
+                <option value="">Выбрать шаблон источника</option>
+                {cameraSourcePresets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label>
               Аудитория
               <select value={form.roomId} onChange={(event) => setForm({ ...form, roomId: Number(event.target.value) })}>
@@ -986,7 +1084,7 @@ function CamerasView({
               <input
                 value={form.sourceUrl}
                 onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })}
-                placeholder="rtsp://..."
+                placeholder="sample, device:0, phone:http://host/video, rtsp://..."
                 required
               />
             </label>
@@ -998,7 +1096,10 @@ function CamerasView({
               >
                 <option value="rtsp">RTSP</option>
                 <option value="http">HTTP</option>
+                <option value="mjpeg">MJPEG/IP camera</option>
                 <option value="device">Device</option>
+                <option value="file">File</option>
+                <option value="sample">Sample video</option>
                 <option value="simulation">Simulation</option>
               </select>
             </label>
@@ -1022,12 +1123,171 @@ function CamerasView({
               Включена
             </label>
             <button className="primary-button">
-              <Plus size={18} />
-              <span>Добавить</span>
+              {selectedCameraId === null ? <Plus size={18} /> : <Wrench size={18} />}
+              <span>{selectedCameraId === null ? 'Добавить' : 'Сохранить источник'}</span>
             </button>
           </form>
         </section>
       )}
+    </div>
+  );
+}
+
+function MobileView() {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState('http://localhost:8090');
+  const [previewToken, setPreviewToken] = useState('');
+  const [previewState, setPreviewState] = useState<PreviewState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => () => stopLocalCamera(), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function pollPreview() {
+      try {
+        const response = await fetch(`${normalizePreviewUrl(previewUrl)}/v1/state`, {
+          headers: previewToken ? { 'X-Preview-Token': previewToken } : {},
+        });
+        if (!response.ok) {
+          throw new Error(`Preview HTTP ${response.status}`);
+        }
+        const state = (await response.json()) as PreviewState;
+        if (!cancelled) {
+          setPreviewState(state);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setPreviewState(null);
+          setError(err instanceof Error ? err.message : 'Preview недоступен');
+        }
+      }
+    }
+    void pollPreview();
+    const interval = window.setInterval(() => void pollPreview(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [previewToken, previewUrl]);
+
+  async function startLocalCamera() {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      localStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      setCameraActive(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Браузер не дал доступ к камере');
+    }
+  }
+
+  function stopLocalCamera() {
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+  }
+
+  const streamSrc = `${normalizePreviewUrl(previewUrl)}/v1/stream.mjpg${previewToken ? `?token=${encodeURIComponent(previewToken)}` : ''}`;
+
+  return (
+    <div className="mobile-console">
+      <section className="panel mobile-hero-panel">
+        <div>
+          <span>Mobile companion</span>
+          <h2>Телефон, планшет или ноутбук как часть контура</h2>
+          <p>
+            Для production-сценария телефон подключается как IP/MJPEG/RTSP источник в worker. Эта страница помогает проверить
+            камеру устройства и смотреть live-preview без desktop-клиента.
+          </p>
+        </div>
+        <Smartphone size={34} />
+      </section>
+
+      <section className="mobile-grid">
+        <article className="panel mobile-camera-card">
+          <div className="panel-header">
+            <div>
+              <h2>Камера устройства</h2>
+              <span>Локальная проверка разрешений браузера</span>
+            </div>
+            <Camera size={20} />
+          </div>
+          <video ref={videoRef} className="device-video" autoPlay playsInline muted />
+          <div className="mobile-actions">
+            <button type="button" className="primary-button" onClick={() => void startLocalCamera()} disabled={cameraActive}>
+              <Camera size={18} />
+              <span>Включить</span>
+            </button>
+            <button type="button" className="icon-button wide-light" onClick={stopLocalCamera}>
+              <WifiOff size={17} />
+              <span>Остановить</span>
+            </button>
+          </div>
+        </article>
+
+        <article className="panel mobile-preview-card">
+          <div className="panel-header">
+            <div>
+              <h2>Live preview worker</h2>
+              <span>MJPEG-поток с рамками детекции</span>
+            </div>
+            <RadioTower size={20} />
+          </div>
+          <div className="preview-phone-frame">
+            <img src={streamSrc} alt="AudienceFlow preview stream" />
+          </div>
+          <div className="stacked-form">
+            <label>
+              Preview URL
+              <input value={previewUrl} onChange={(event) => setPreviewUrl(event.target.value)} />
+            </label>
+            <label>
+              Preview token
+              <input value={previewToken} onChange={(event) => setPreviewToken(event.target.value)} type="password" />
+            </label>
+          </div>
+          <div className="mobile-stats">
+            <Metric icon={<Users size={18} />} label="Людей" value={previewState?.count ?? '-'} accent="blue" />
+            <Metric
+              icon={<ShieldCheck size={18} />}
+              label="Достоверность"
+              value={previewState ? `${Math.round(previewState.confidence * 100)}%` : '-'}
+              accent="teal"
+            />
+            <Metric icon={<Activity size={18} />} label="FPS" value={previewState?.fps ?? '-'} accent="amber" />
+          </div>
+        </article>
+
+        <article className="panel mobile-guide">
+          <div className="panel-header">
+            <div>
+              <h2>Как подключить телефон</h2>
+              <span>Без облачных секретов и встроенных паролей</span>
+            </div>
+            <Server size={20} />
+          </div>
+          <ol>
+            <li>Подключите телефон и компьютер к одной защищённой сети.</li>
+            <li>Запустите на телефоне IP camera/MJPEG приложение или RTSP-камеру.</li>
+            <li>В разделе камер укажите источник: `phone:http://IP:PORT/video` или `rtsp://IP/live`.</li>
+            <li>Запустите worker с `CAMERA_SOURCE` равным этому URL и detector `hog` или `yolo`.</li>
+          </ol>
+          {error && <div className="form-error">{error}</div>}
+        </article>
+      </section>
     </div>
   );
 }
@@ -1249,7 +1509,10 @@ function streamLabel(streamType: CameraType['streamType']): string {
   const labels: Record<CameraType['streamType'], string> = {
     rtsp: 'RTSP-поток',
     http: 'HTTP-поток',
+    mjpeg: 'MJPEG/IP camera',
     device: 'камера устройства',
+    file: 'видеофайл',
+    sample: 'sample video',
     simulation: 'симулятор',
   };
   return labels[streamType];
@@ -1286,6 +1549,8 @@ function viewTitle(view: View): string {
       return 'Аудиторный фонд';
     case 'cameras':
       return 'Камеры';
+    case 'mobile':
+      return 'Mobile companion';
     case 'users':
       return 'Доступ';
     default:
@@ -1299,6 +1564,12 @@ function formatTime(value: string): string {
 
 function formatClock(value: Date): string {
   return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(value);
+}
+
+function normalizePreviewUrl(value: string): string {
+  const trimmed = value.trim();
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  return withScheme.replace(/\/$/, '');
 }
 
 function restoreSession(): AuthSession | null {

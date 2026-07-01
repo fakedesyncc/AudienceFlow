@@ -32,3 +32,4 @@ bin/
 # Runtime data
 pgdata/
 captures/
+.workflow/

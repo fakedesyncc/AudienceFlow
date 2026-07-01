@@ -1,0 +1,19 @@
+{
+  "name": "AudienceFlow",
+  "short_name": "AudienceFlow",
+  "description": "Мониторинг аудиторий, камер и посещаемости в реальном времени.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f3f5f8",
+  "theme_color": "#102a43",
+  "icons": [
+    {
+      "src": "audienceflow-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -58,7 +58,7 @@ export interface Camera {
   roomName: string;
   name: string;
   sourceUrl: string | null;
-  streamType: 'rtsp' | 'http' | 'device' | 'simulation';
+  streamType: 'rtsp' | 'http' | 'mjpeg' | 'device' | 'file' | 'sample' | 'simulation';
   status: 'online' | 'offline' | 'maintenance';
   enabled: boolean;
   lastSeenAt: string | null;

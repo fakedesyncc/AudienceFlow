@@ -28,9 +28,9 @@ let demoCameras: Camera[] = [
     id: 1,
     roomId: 1,
     roomName: 'Аудитория 305',
-    name: 'Камера аудитории',
+    name: 'Public sample video',
     sourceUrl: null,
-    streamType: 'simulation',
+    streamType: 'sample',
     status: 'online',
     enabled: true,
     lastSeenAt: new Date().toISOString(),
@@ -39,9 +39,9 @@ let demoCameras: Camera[] = [
     id: 2,
     roomId: 2,
     roomName: 'Лекционный зал 101',
-    name: 'Камера входной зоны',
+    name: 'IP camera входной зоны',
     sourceUrl: null,
-    streamType: 'simulation',
+    streamType: 'mjpeg',
     status: 'online',
     enabled: true,
     lastSeenAt: new Date().toISOString(),
@@ -52,7 +52,7 @@ let demoCameras: Camera[] = [
     roomName: 'Поточная аудитория Б-204',
     name: 'Камера поточной аудитории',
     sourceUrl: null,
-    streamType: 'simulation',
+    streamType: 'rtsp',
     status: 'maintenance',
     enabled: true,
     lastSeenAt: null,
@@ -198,6 +198,21 @@ export async function createCamera(session: AuthSession, payload: CreateCameraPa
     return camera;
   }
   return request<Camera>('/cameras', { method: 'POST', body: JSON.stringify(payload) }, session);
+}
+
+export async function updateCamera(session: AuthSession, id: number, payload: CreateCameraPayload): Promise<Camera> {
+  if (session.demo) {
+    const room = demoRooms.find((candidate) => candidate.id === payload.roomId);
+    const updated: Camera = {
+      ...payload,
+      id,
+      roomName: room?.name ?? 'Неизвестная аудитория',
+      lastSeenAt: payload.status === 'online' ? new Date().toISOString() : null,
+    };
+    demoCameras = demoCameras.map((camera) => (camera.id === id ? updated : camera));
+    return updated;
+  }
+  return request<Camera>(`/cameras/${id}`, { method: 'PUT', body: JSON.stringify(payload) }, session);
 }
 
 export async function fetchUsers(session: AuthSession): Promise<UserView[]> {

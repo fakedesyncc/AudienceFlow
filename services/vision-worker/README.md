@@ -4,9 +4,13 @@ The worker reads a camera source, estimates the number of people, stabilizes the
 
 Supported sources:
 
-- `simulation` for Docker/demo mode.
-- `0`, `1`, etc. for local device cameras.
-- RTSP/HTTP URLs, including phone IP-camera apps.
+- `sample` for the public sample video configured by `SAMPLE_VIDEO_URL`.
+- `sample:https://.../video.mp4` for a one-off internet video URL.
+- `device:0`, `0`, `1`, etc. for local device cameras.
+- `phone:http://host:port/video` for phone IP-camera apps.
+- `rtsp://...`, `http://...`, `https://...`, and MJPEG URLs supported by OpenCV.
+- `/absolute/path/video.mp4` or `file:///absolute/path/video.mp4` for local files.
+- `simulation` only as a fallback synthetic source.
 
 Supported detectors:
 
@@ -14,11 +18,27 @@ Supported detectors:
 - `hog` uses OpenCV's built-in HOG person detector.
 - `yolo` uses Ultralytics YOLO when `requirements-yolo.txt` is installed.
 
-Example:
+Public video example:
 
 ```bash
-CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
+CAMERA_SOURCE=sample DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
 ```
+
+Local camera example:
+
+```bash
+CAMERA_SOURCE=device:0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
+```
+
+Phone as camera example:
+
+```bash
+CAMERA_SOURCE=phone:http://192.168.1.10:8080/video DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
+```
+
+The worker reconnects to live streams after read failures. Video files and the public sample loop by default; set `VIDEO_LOOP=false` if you need reconnect-style behavior instead.
+
+Docker Desktop on macOS usually cannot access the built-in webcam directly. For the device camera on macOS, run the worker on the host. For Linux, pass `/dev/video*` into the container.
 
 ## Photo/video analysis for tests
 

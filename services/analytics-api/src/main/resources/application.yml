@@ -6,6 +6,8 @@ server:
 spring:
   application:
     name: audienceflow-analytics-api
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
   datasource:
     url: ${JDBC_DATABASE_URL:jdbc:postgresql://localhost:5432/audienceflow}
     username: ${JDBC_DATABASE_USERNAME:audienceflow}

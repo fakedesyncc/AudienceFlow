@@ -28,9 +28,9 @@ public class UserSeeder implements ApplicationRunner {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.seedUsers = List.of(
-                new SeedUser(adminEmail, "Администратор AudienceFlow", Role.ADMIN, adminPassword),
-                new SeedUser(technicianEmail, "Техник AudienceFlow", Role.TECHNICIAN, technicianPassword),
-                new SeedUser(teacherEmail, "Преподаватель AudienceFlow", Role.TEACHER, teacherPassword)
+                new SeedUser(adminEmail, "Оператор системы", Role.ADMIN, adminPassword),
+                new SeedUser(technicianEmail, "Инженер камер", Role.TECHNICIAN, technicianPassword),
+                new SeedUser(teacherEmail, "Учебный просмотр", Role.TEACHER, teacherPassword)
         );
     }
 

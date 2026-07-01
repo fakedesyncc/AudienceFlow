@@ -14,6 +14,7 @@ Web demo: https://fakedesyncc.github.io/AudienceFlow/
 - считает текущую загрузку, пики и 5-минутные агрегаты;
 - показывает live-картину по корпусам, аудиториям и камерам;
 - даёт нативный JavaFX desktop-клиент для реального стенда;
+- даёт mobile-first PWA companion для просмотра и проверки камеры устройства;
 - даёт отдельные рабочие разделы для преподавателей, техников и администраторов;
 - позволяет техникам и админам подключать камеры через панель;
 - выдаёт JWT после логина и не хранит рабочие пароли в репозитории;
@@ -34,7 +35,7 @@ Web demo: https://fakedesyncc.github.io/AudienceFlow/
 
 Вкладка `Камера` подключается к preview-каналу vision-worker: показывает живой кадр с рамками детекции, текущий счёт людей, уверенность, FPS, умеет менять масштаб, сохранять снимки в `~/Pictures/AudienceFlow` и настраивать виртуальную линию для счёта входа/выхода.
 
-Web-клиент — `services/web`. Он оставлен как статическая демонстрация для GitHub Pages и быстрого показа интерфейса без backend.
+Web-клиент — `services/web`. Это статическая демонстрация для GitHub Pages и mobile/PWA companion: можно открыть презентационный мониторинг, подключиться к реальному API, проверить камеру устройства в браузере и смотреть preview worker по MJPEG.
 
 Ни desktop, ни web не хранят рабочие секреты. В web доступны два режима:
 
@@ -48,13 +49,14 @@ Web-клиент — `services/web`. Он оставлен как статиче
 - `Аналитика` — график 5-минутных агрегатов и карточки заполненности в web demo;
 - `Аудитории` — реестр аудиторий и форма добавления для техника/администратора;
 - `Камеры` — состояние источников и подключение RTSP/HTTP/device;
+- `Mobile` — PWA-экран для телефона/планшета: локальная проверка камеры, live-preview worker и подсказка по IP/MJPEG/RTSP подключению телефона;
 - `Доступ` — создание пользователей и ролей, только для администратора.
 
 ## Архитектура
 
 ```mermaid
 flowchart LR
-    Camera["Камера устройства / телефон / RTSP / симулятор"] --> Worker["Python vision-worker"]
+    Camera["Камера устройства / телефон / RTSP / sample video"] --> Worker["Python vision-worker"]
     Worker -->|"HTTP JSON + X-Ingest-Key"| Gateway["Go ingest-gateway"]
     Gateway -->|"batched inserts"| DB[(PostgreSQL)]
     DB --> API["Java Spring Analytics API"]
@@ -127,10 +129,16 @@ make smoke
 
 ## Камера
 
-Симулятор для демонстрации:
+Публичное видео для демонстрации вместо синтетической камеры:
 
 ```bash
 docker compose --profile worker up --build vision-worker
+```
+
+По умолчанию worker использует `CAMERA_SOURCE=sample` и публичный sample video. URL можно переопределить:
+
+```bash
+CAMERA_SOURCE=sample SAMPLE_VIDEO_URL=https://example.com/people.mp4 docker compose --profile worker up --build vision-worker
 ```
 
 После запуска worker открой desktop-клиент, вкладку `Камера`, и укажи:
@@ -139,7 +147,7 @@ docker compose --profile worker up --build vision-worker
 Preview URL: http://localhost:8090
 ```
 
-В блоке `Линия потока` можно применить координаты виртуальной линии, сбросить счётчики и увидеть `Вошло`, `Вышло`, `Баланс` и количество активных треков. Для симулятора подходят стартовые координаты `470,80 → 470,460`.
+В блоке `Линия потока` можно применить координаты виртуальной линии, сбросить счётчики и увидеть `Вошло`, `Вышло`, `Баланс` и количество активных треков.
 
 Камера ноутбука или подключённого устройства:
 
@@ -148,10 +156,17 @@ cd services/vision-worker
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-PREVIEW_ADDR=127.0.0.1:8090 CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
+PREVIEW_ADDR=127.0.0.1:8090 CAMERA_SOURCE=device:0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
 ```
 
-Телефон обычно подключается через IP-camera приложение. Если приложение отдаёт RTSP или HTTP MJPEG, URL можно передать в `CAMERA_SOURCE` или добавить через раздел камер в панели.
+Телефон обычно подключается через IP-camera приложение. Если приложение отдаёт RTSP или HTTP MJPEG, URL можно передать в `CAMERA_SOURCE` или добавить через раздел камер в панели:
+
+```bash
+CAMERA_SOURCE=phone:http://192.168.1.10:8080/video DETECTOR=hog python -m app.main
+CAMERA_SOURCE=rtsp://192.168.1.10/live DETECTOR=hog python -m app.main
+```
+
+На macOS Docker Desktop обычно не отдаёт встроенную камеру контейнеру, поэтому `device:0` лучше запускать worker-ом на host. На Linux можно пробросить `/dev/video*` в контейнер.
 
 Если preview доступен не только с локальной машины, задай случайный токен:
 
@@ -185,7 +200,7 @@ make test      # Go, Java API, JavaFX client, Python syntax, React build
 make desktop   # запуск JavaFX desktop-клиента
 make desktop-image # runtime-образ desktop-клиента для текущей ОС
 make up        # docker compose up --build
-make worker    # simulated worker profile
+make worker    # sample-video worker profile
 make smoke     # ручное событие в ingest gateway
 make down      # остановить compose stack
 ```
