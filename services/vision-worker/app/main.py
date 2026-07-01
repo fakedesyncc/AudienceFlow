@@ -43,6 +43,19 @@ class Detection:
             track_id=self.track_id,
         )
 
+    def with_track(self, track_id: int) -> "Detection":
+        return Detection(
+            x=self.x,
+            y=self.y,
+            width=self.width,
+            height=self.height,
+            confidence=self.confidence,
+            track_id=track_id,
+        )
+
+    def center(self) -> tuple[float, float]:
+        return self.x + self.width / 2, self.y + self.height / 2
+
     def to_json(self) -> dict[str, Any]:
         return {
             "x": self.x,
@@ -140,6 +153,143 @@ class CountStabilizer:
         return stable_count, round(stable_confidence, 3)
 
 
+class LineCrossingCounter:
+    def __init__(self, initial_line: tuple[int, int, int, int] | None) -> None:
+        self.lock = threading.Lock()
+        self.line_config = initial_line
+        self.entered = 0
+        self.exited = 0
+        self.next_track_id = 100_000
+        self.tracks: dict[int, dict[str, Any]] = {}
+        self.max_distance = 120.0
+        self.max_age_seconds = 2.5
+        self.dead_zone_px = 6.0
+
+    def update(self, detections: list[Detection]) -> tuple[list[Detection], dict[str, Any]]:
+        now = time.monotonic()
+        with self.lock:
+            self._expire(now)
+            assigned: set[int] = set()
+            tracked: list[Detection] = []
+            for detection in detections:
+                track_id = self._assign_track_id(detection, assigned)
+                assigned.add(track_id)
+                tracked.append(self._update_track(track_id, detection, now))
+            return tracked, self._snapshot_unlocked()
+
+    def set_line(self, line_config: tuple[int, int, int, int] | None) -> dict[str, Any]:
+        with self.lock:
+            self.line_config = line_config
+            self.tracks.clear()
+            return self._snapshot_unlocked()
+
+    def reset(self) -> dict[str, Any]:
+        with self.lock:
+            self.entered = 0
+            self.exited = 0
+            self.tracks.clear()
+            return self._snapshot_unlocked()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            self._expire(time.monotonic())
+            return self._snapshot_unlocked()
+
+    def _assign_track_id(self, detection: Detection, assigned: set[int]) -> int:
+        if detection.track_id is not None:
+            return detection.track_id
+
+        cx, cy = detection.center()
+        best_track_id: int | None = None
+        best_distance = self.max_distance
+        for track_id, track in self.tracks.items():
+            if track_id in assigned:
+                continue
+            tx, ty = track["center"]
+            distance = math.hypot(cx - tx, cy - ty)
+            if distance < best_distance:
+                best_distance = distance
+                best_track_id = track_id
+
+        if best_track_id is not None:
+            return best_track_id
+
+        track_id = self.next_track_id
+        self.next_track_id += 1
+        return track_id
+
+    def _update_track(self, track_id: int, detection: Detection, now: float) -> Detection:
+        center = detection.center()
+        side = self._side(center)
+        previous = self.tracks.get(track_id)
+        previous_side = int(previous["side"]) if previous else 0
+
+        if (
+            self.line_config
+            and previous_side != 0
+            and side != 0
+            and previous_side != side
+            and self._inside_segment(center)
+        ):
+            if previous_side < side:
+                self.entered += 1
+            else:
+                self.exited += 1
+
+        self.tracks[track_id] = {
+            "center": center,
+            "side": side if side != 0 else previous_side,
+            "last_seen": now,
+        }
+        return detection.with_track(track_id)
+
+    def _side(self, center: tuple[float, float]) -> int:
+        if not self.line_config:
+            return 0
+        x1, y1, x2, y2 = self.line_config
+        dx = x2 - x1
+        dy = y2 - y1
+        length = math.hypot(dx, dy)
+        if length < 1:
+            return 0
+        cx, cy = center
+        signed_distance = (dx * (cy - y1) - dy * (cx - x1)) / length
+        if abs(signed_distance) < self.dead_zone_px:
+            return 0
+        return 1 if signed_distance > 0 else -1
+
+    def _inside_segment(self, center: tuple[float, float]) -> bool:
+        if not self.line_config:
+            return False
+        x1, y1, x2, y2 = self.line_config
+        dx = x2 - x1
+        dy = y2 - y1
+        length_squared = dx * dx + dy * dy
+        if length_squared < 1:
+            return False
+        cx, cy = center
+        projection = ((cx - x1) * dx + (cy - y1) * dy) / length_squared
+        return -0.08 <= projection <= 1.08
+
+    def _expire(self, now: float) -> None:
+        expired = [
+            track_id
+            for track_id, track in self.tracks.items()
+            if now - float(track["last_seen"]) > self.max_age_seconds
+        ]
+        for track_id in expired:
+            del self.tracks[track_id]
+
+    def _snapshot_unlocked(self) -> dict[str, Any]:
+        return {
+            "line": line_to_json(self.line_config),
+            "entered": self.entered,
+            "exited": self.exited,
+            "balance": self.entered - self.exited,
+            "active_tracks": len(self.tracks),
+        }
+
+
 class SimulationDetector:
     def __init__(self) -> None:
         self.started = time.monotonic()
@@ -228,8 +378,9 @@ class YoloDetector:
 
 
 class PreviewServer:
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, line_counter: LineCrossingCounter) -> None:
         self.cfg = cfg
+        self.line_counter = line_counter
         self.host, self.port = parse_preview_addr(cfg.preview_addr)
         self.lock = threading.Lock()
         self.jpeg: bytes | None = None
@@ -245,6 +396,7 @@ class PreviewServer:
             "fps": 0.0,
             "detections": [],
             "updated_at": None,
+            **line_counter.snapshot(),
         }
         self.server: ThreadingHTTPServer | None = None
 
@@ -276,6 +428,11 @@ class PreviewServer:
     def snapshot(self) -> tuple[bytes | None, dict[str, Any]]:
         with self.lock:
             return self.jpeg, dict(self.state)
+
+    def merge_state(self, changes: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            self.state = {**self.state, **changes}
+            return dict(self.state)
 
     def _authorized(self, path: str, headers: Any) -> bool:
         if not self.cfg.preview_token:
@@ -313,6 +470,43 @@ class PreviewServer:
                     self._send_stream()
                     return
                 self.send_error(404)
+
+            def do_POST(self) -> None:
+                parsed = urlparse(self.path)
+                if not preview._authorized(self.path, self.headers):
+                    self.send_error(401, "preview token required")
+                    return
+                try:
+                    if parsed.path == "/v1/line":
+                        payload = self._read_json()
+                        state = preview.merge_state(preview.line_counter.set_line(parse_line_payload(payload)))
+                        self._send_json(state)
+                        return
+                    if parsed.path == "/v1/counters/reset":
+                        self._read_json(allow_empty=True)
+                        self._send_json(preview.merge_state(preview.line_counter.reset()))
+                        return
+                except ValueError as exc:
+                    self.send_error(400, str(exc))
+                    return
+                self.send_error(404)
+
+            def _read_json(self, allow_empty: bool = False) -> dict[str, Any]:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    if allow_empty:
+                        return {}
+                    raise ValueError("JSON body is required")
+                if length > 4096:
+                    raise ValueError("JSON body is too large")
+                raw = self.rfile.read(length)
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except json.JSONDecodeError as exc:
+                    raise ValueError("Invalid JSON body") from exc
+                if not isinstance(payload, dict):
+                    raise ValueError("JSON body must be an object")
+                return payload
 
             def _send_json(self, payload: dict[str, Any]) -> None:
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -390,8 +584,9 @@ def main() -> int:
 
     detector = create_detector(cfg)
     stabilizer = CountStabilizer(cfg.stabilization_window, cfg.confidence_threshold)
+    line_counter = LineCrossingCounter(cfg.line_config)
     gateway = GatewayClient(cfg)
-    preview = PreviewServer(cfg) if cfg.preview_enabled else None
+    preview = PreviewServer(cfg, line_counter) if cfg.preview_enabled else None
     if preview:
         preview.start()
 
@@ -404,15 +599,16 @@ def main() -> int:
     }, ensure_ascii=False), flush=True)
 
     if cfg.camera_source == "simulation" or cfg.detector == "simulation":
-        return run_simulation_loop(cfg, detector, stabilizer, gateway, preview)
+        return run_simulation_loop(cfg, detector, stabilizer, line_counter, gateway, preview)
 
-    return run_camera_loop(cfg, detector, stabilizer, gateway, preview)
+    return run_camera_loop(cfg, detector, stabilizer, line_counter, gateway, preview)
 
 
 def run_simulation_loop(
     cfg: Config,
     detector: Detector,
     stabilizer: CountStabilizer,
+    line_counter: LineCrossingCounter,
     gateway: GatewayClient,
     preview: PreviewServer | None,
 ) -> int:
@@ -422,15 +618,17 @@ def run_simulation_loop(
     last_sent = 0.0
     while True:
         result = detector.detect(None)
+        tracked_detections, line_state = line_counter.update(result.detections)
+        tracked_result = DetectionResult(result.count, result.confidence, tracked_detections)
         stable_count, stable_confidence = stabilizer.push(result.count, result.confidence)
         now = time.monotonic()
         fps = 1 / max(now - last_frame_at, 0.001)
         last_frame_at = now
         if preview:
-            frame = build_simulation_frame(result.detections)
+            frame = build_simulation_frame(tracked_detections)
             preview.update(
-                draw_overlay(cv2, frame, result.detections, stable_count, stable_confidence, cfg, fps),
-                preview_state(cfg, result, stable_count, stable_confidence, fps),
+                draw_overlay(cv2, frame, tracked_detections, stable_count, stable_confidence, cfg, fps, line_state),
+                preview_state(cfg, tracked_result, stable_count, stable_confidence, fps, line_state),
             )
         if now - last_sent >= cfg.send_interval_seconds:
             safe_send(gateway, stable_count, stable_confidence)
@@ -442,6 +640,7 @@ def run_camera_loop(
     cfg: Config,
     detector: Detector,
     stabilizer: CountStabilizer,
+    line_counter: LineCrossingCounter,
     gateway: GatewayClient,
     preview: PreviewServer | None,
 ) -> int:
@@ -463,6 +662,8 @@ def run_camera_loop(
                 continue
 
             result = detector.detect(frame)
+            tracked_detections, line_state = line_counter.update(result.detections)
+            tracked_result = DetectionResult(result.count, result.confidence, tracked_detections)
             stable_count, stable_confidence = stabilizer.push(result.count, result.confidence)
 
             now = time.monotonic()
@@ -470,8 +671,8 @@ def run_camera_loop(
             last_frame_at = now
             if preview:
                 preview.update(
-                    draw_overlay(cv2, frame, result.detections, stable_count, stable_confidence, cfg, fps),
-                    preview_state(cfg, result, stable_count, stable_confidence, fps),
+                    draw_overlay(cv2, frame, tracked_detections, stable_count, stable_confidence, cfg, fps, line_state),
+                    preview_state(cfg, tracked_result, stable_count, stable_confidence, fps, line_state),
                 )
             if now - last_sent >= cfg.send_interval_seconds:
                 safe_send(gateway, stable_count, stable_confidence)
@@ -511,6 +712,7 @@ def draw_overlay(
     stable_confidence: float,
     cfg: Config,
     fps: float,
+    line_state: dict[str, Any],
 ) -> Any:
     output, ratio = resize_for_preview(cv2, frame, cfg.preview_width)
     scaled_detections = [detection.scaled(ratio) for detection in detections]
@@ -523,14 +725,27 @@ def draw_overlay(
         cv2.rectangle(output, (left, max(0, top - 24)), (left + 96, top), (12, 65, 194), -1)
         cv2.putText(output, label, (left + 6, max(16, top - 7)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-    if cfg.line_config:
-        x1, y1, x2, y2 = [int(value * ratio) for value in cfg.line_config]
+    line = line_state.get("line")
+    if line:
+        x1 = int(line["x1"] * ratio)
+        y1 = int(line["y1"] * ratio)
+        x2 = int(line["x2"] * ratio)
+        y2 = int(line["y2"] * ratio)
         cv2.line(output, (x1, y1), (x2, y2), (15, 118, 110), 3)
-        cv2.putText(output, "line", (x1 + 8, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (15, 118, 110), 2)
+        cv2.putText(output, "flow line", (x1 + 8, max(24, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (15, 118, 110), 2)
 
-    cv2.rectangle(output, (16, 16), (430, 86), (28, 25, 23), -1)
+    cv2.rectangle(output, (16, 16), (460, 112), (28, 25, 23), -1)
     cv2.putText(output, f"AudienceFlow  people: {stable_count}", (32, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
     cv2.putText(output, f"conf {stable_confidence:.2f}   fps {fps:.1f}", (32, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (254, 243, 199), 1)
+    cv2.putText(
+        output,
+        f"in {line_state.get('entered', 0)}   out {line_state.get('exited', 0)}   tracks {line_state.get('active_tracks', 0)}",
+        (32, 99),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.58,
+        (209, 250, 229),
+        1,
+    )
     return output
 
 
@@ -579,8 +794,9 @@ def preview_state(
     stable_count: int,
     stable_confidence: float,
     fps: float,
+    line_state: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
+    state = {
         "worker_id": cfg.worker_id,
         "room_id": cfg.room_id,
         "source": cfg.camera_source,
@@ -592,6 +808,8 @@ def preview_state(
         "detections": [detection.to_json() for detection in result.detections],
         "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+    state.update(line_state)
+    return state
 
 
 def parse_preview_addr(value: str) -> tuple[str, int]:
@@ -610,6 +828,35 @@ def parse_line_config(value: str) -> tuple[int, int, int, int] | None:
     if len(parts) != 4:
         raise ValueError("LINE_CONFIG must contain x1,y1,x2,y2")
     return tuple(int(part) for part in parts)  # type: ignore[return-value]
+
+
+def parse_line_payload(payload: dict[str, Any]) -> tuple[int, int, int, int] | None:
+    if payload.get("enabled") is False:
+        return None
+    try:
+        line = (
+            int(payload["x1"]),
+            int(payload["y1"]),
+            int(payload["x2"]),
+            int(payload["y2"]),
+        )
+    except KeyError as exc:
+        raise ValueError("Line payload must contain x1, y1, x2, y2") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Line coordinates must be integers") from exc
+
+    if line[0] == line[2] and line[1] == line[3]:
+        raise ValueError("Line endpoints must be different")
+    if any(value < 0 or value > 10_000 for value in line):
+        raise ValueError("Line coordinates must be between 0 and 10000")
+    return line
+
+
+def line_to_json(line_config: tuple[int, int, int, int] | None) -> dict[str, int] | None:
+    if line_config is None:
+        return None
+    x1, y1, x2, y2 = line_config
+    return {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
 
 
 def env_bool(key: str, default: str) -> bool:

@@ -114,6 +114,10 @@ public final class AudienceFlowDesktopApplication extends Application {
     private Label previewCountLabel;
     private Label previewConfidenceLabel;
     private Label previewFpsLabel;
+    private Label previewEnteredLabel;
+    private Label previewExitedLabel;
+    private Label previewBalanceLabel;
+    private Label previewTracksLabel;
     private Label previewMetaLabel;
 
     public static void main(String[] args) {
@@ -300,6 +304,13 @@ public final class AudienceFlowDesktopApplication extends Application {
         Button zoomReset = new Button("100%");
         Button zoomIn = new Button("+25%");
         Button snapshot = new Button("Снимок");
+        TextField lineX1 = lineField("470");
+        TextField lineY1 = lineField("80");
+        TextField lineX2 = lineField("470");
+        TextField lineY2 = lineField("460");
+        Button applyLine = new Button("Применить");
+        Button disableLine = new Button("Выключить");
+        Button resetCounters = new Button("Сбросить счёт");
 
         previewUrl.setPromptText("http://localhost:8090");
         previewToken.setPromptText("Preview token, если задан");
@@ -312,6 +323,12 @@ public final class AudienceFlowDesktopApplication extends Application {
         zoomOut.getStyleClass().add("secondary-button");
         zoomReset.getStyleClass().add("secondary-button");
         zoomIn.getStyleClass().add("secondary-button");
+        applyLine.getStyleClass().add("secondary-button");
+        applyLine.setGraphic(icon(Name.LINE, "button-icon"));
+        disableLine.getStyleClass().add("secondary-button");
+        disableLine.setGraphic(icon(Name.STOP, "button-icon"));
+        resetCounters.getStyleClass().add("secondary-button");
+        resetCounters.setGraphic(icon(Name.REFRESH, "button-icon"));
 
         previewImageView = new ImageView();
         previewImageView.setPreserveRatio(true);
@@ -330,7 +347,17 @@ public final class AudienceFlowDesktopApplication extends Application {
         previewCountLabel = label("0", "camera-value");
         previewConfidenceLabel = label("0%", "camera-value");
         previewFpsLabel = label("0.0", "camera-value");
+        previewEnteredLabel = label("0", "camera-value");
+        previewExitedLabel = label("0", "camera-value");
+        previewBalanceLabel = label("0", "camera-value");
+        previewTracksLabel = label("0", "camera-value");
         previewMetaLabel = label("Источник не выбран", "muted");
+
+        HBox lineRowStart = new HBox(8, field("x1", lineX1), field("y1", lineY1));
+        HBox lineRowEnd = new HBox(8, field("x2", lineX2), field("y2", lineY2));
+        HBox lineActions = new HBox(8, applyLine, disableLine);
+        HBox counterRow = new HBox(8, flowStat("Вошло", previewEnteredLabel), flowStat("Вышло", previewExitedLabel));
+        HBox balanceRow = new HBox(8, flowStat("Баланс", previewBalanceLabel), flowStat("Треки", previewTracksLabel));
 
         VBox controls = new VBox(14,
                 label("Live камера", "panel-title"),
@@ -342,6 +369,14 @@ public final class AudienceFlowDesktopApplication extends Application {
                 cameraStat("Достоверность", previewConfidenceLabel),
                 cameraStat("FPS preview", previewFpsLabel),
                 previewMetaLabel,
+                separator(),
+                label("Линия потока", "field-label"),
+                lineRowStart,
+                lineRowEnd,
+                lineActions,
+                resetCounters,
+                counterRow,
+                balanceRow,
                 separator(),
                 label("Масштаб", "field-label"),
                 new HBox(8, zoomOut, zoomReset, zoomIn),
@@ -355,6 +390,9 @@ public final class AudienceFlowDesktopApplication extends Application {
         zoomReset.setOnAction(event -> setPreviewZoom(1.0));
         zoomIn.setOnAction(event -> setPreviewZoom(Math.min(3.0, previewZoom + 0.25)));
         snapshot.setOnAction(event -> savePreviewSnapshot());
+        applyLine.setOnAction(event -> configurePreviewLine(true, lineX1, lineY1, lineX2, lineY2));
+        disableLine.setOnAction(event -> configurePreviewLine(false, lineX1, lineY1, lineX2, lineY2));
+        resetCounters.setOnAction(event -> resetPreviewCounters());
 
         BorderPane videoPanel = new BorderPane(videoScroll);
         videoPanel.getStyleClass().add("panel");
@@ -363,8 +401,11 @@ public final class AudienceFlowDesktopApplication extends Application {
 
         BorderPane view = new BorderPane(videoPanel);
         view.getStyleClass().add("content");
-        BorderPane.setMargin(controls, new Insets(0, 0, 0, 16));
-        view.setRight(controls);
+        ScrollPane controlsScroll = new ScrollPane(controls);
+        controlsScroll.getStyleClass().add("controls-scroll");
+        controlsScroll.setFitToWidth(true);
+        BorderPane.setMargin(controlsScroll, new Insets(0, 0, 0, 16));
+        view.setRight(controlsScroll);
         return view;
     }
 
@@ -748,17 +789,28 @@ public final class AudienceFlowDesktopApplication extends Application {
         if (previewImageView != null) {
             previewImageView.setImage(new Image(new ByteArrayInputStream(frame)));
         }
+        applyPreviewState(state);
+        setPreviewStatusText("LIVE preview · " + TIME_FORMAT.format(Instant.now()), false);
+    }
+
+    private void applyPreviewState(PreviewState state) {
         setText(previewCountLabel, String.valueOf(state.count()));
         setText(previewConfidenceLabel, Math.round(state.confidence() * 100) + "%");
         setText(previewFpsLabel, String.format("%.1f", state.fps()));
+        setText(previewEnteredLabel, String.valueOf(state.entered()));
+        setText(previewExitedLabel, String.valueOf(state.exited()));
+        setText(previewBalanceLabel, String.valueOf(state.balance()));
+        setText(previewTracksLabel, String.valueOf(state.activeTracks()));
+
+        String line = state.line() == null ? "линия выключена" : "линия " + state.line().label();
         setText(
                 previewMetaLabel,
                 "room_id " + state.roomId()
                         + " · " + nullSafe(state.detector())
                         + " · " + nullSafe(state.source())
                         + " · boxes " + (state.detections() == null ? 0 : state.detections().size())
+                        + " · " + line
         );
-        setPreviewStatusText("LIVE preview · " + TIME_FORMAT.format(Instant.now()), false);
     }
 
     private void stopPreview(String message) {
@@ -797,6 +849,61 @@ public final class AudienceFlowDesktopApplication extends Application {
         } catch (IOException e) {
             updatePreviewStatus("Не удалось сохранить снимок: " + e.getMessage(), true);
         }
+    }
+
+    private void configurePreviewLine(boolean enabled, TextField x1, TextField y1, TextField x2, TextField y2) {
+        PreviewClient client = previewClient;
+        if (client == null) {
+            updatePreviewStatus("Сначала подключите preview worker", true);
+            return;
+        }
+
+        int parsedX1 = 0;
+        int parsedY1 = 0;
+        int parsedX2 = 1;
+        int parsedY2 = 1;
+        try {
+            if (enabled) {
+                parsedX1 = parseCoordinate(x1, "x1");
+                parsedY1 = parseCoordinate(y1, "y1");
+                parsedX2 = parseCoordinate(x2, "x2");
+                parsedY2 = parseCoordinate(y2, "y2");
+            }
+        } catch (IllegalArgumentException e) {
+            updatePreviewStatus(e.getMessage(), true);
+            return;
+        }
+        if (enabled && parsedX1 == parsedX2 && parsedY1 == parsedY2) {
+            updatePreviewStatus("Точки линии должны отличаться", true);
+            return;
+        }
+
+        client.setLine(enabled, parsedX1, parsedY1, parsedX2, parsedY2)
+                .whenComplete((state, failure) -> Platform.runLater(() -> {
+                    if (failure != null) {
+                        updatePreviewStatus(userMessage(failure), true);
+                        return;
+                    }
+                    applyPreviewState(state);
+                    updatePreviewStatus(enabled ? "Линия потока применена" : "Линия потока выключена", false);
+                }));
+    }
+
+    private void resetPreviewCounters() {
+        PreviewClient client = previewClient;
+        if (client == null) {
+            updatePreviewStatus("Сначала подключите preview worker", true);
+            return;
+        }
+        client.resetCounters()
+                .whenComplete((state, failure) -> Platform.runLater(() -> {
+                    if (failure != null) {
+                        updatePreviewStatus(userMessage(failure), true);
+                        return;
+                    }
+                    applyPreviewState(state);
+                    updatePreviewStatus("Счётчики входа/выхода сброшены", false);
+                }));
     }
 
     private void applySnapshot(List<CurrentAttendance> snapshot, String source) {
@@ -955,6 +1062,21 @@ public final class AudienceFlowDesktopApplication extends Application {
         VBox stat = new VBox(4, label(title, "metric-title"), value);
         stat.getStyleClass().add("camera-stat");
         return stat;
+    }
+
+    private Node flowStat(String title, Label value) {
+        VBox stat = new VBox(4, label(title, "metric-title"), value);
+        stat.getStyleClass().addAll("camera-stat", "flow-stat");
+        HBox.setHgrow(stat, Priority.ALWAYS);
+        return stat;
+    }
+
+    private TextField lineField(String value) {
+        TextField field = new TextField(value);
+        field.getStyleClass().add("line-field");
+        field.setPrefColumnCount(4);
+        field.setMaxWidth(Double.MAX_VALUE);
+        return field;
     }
 
     private Node loginSignalPanel() {
@@ -1150,6 +1272,18 @@ public final class AudienceFlowDesktopApplication extends Application {
 
     private String nullSafe(String value) {
         return value == null || value.isBlank() ? "n/a" : value;
+    }
+
+    private int parseCoordinate(TextField field, String name) {
+        try {
+            int value = Integer.parseInt(field.getText().trim());
+            if (value < 0 || value > 10_000) {
+                throw new IllegalArgumentException(name + " должен быть от 0 до 10000");
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(name + " должен быть целым числом", e);
+        }
     }
 
     private String sourceLabel(String source) {

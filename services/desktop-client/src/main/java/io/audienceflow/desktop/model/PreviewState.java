@@ -16,9 +16,14 @@ public record PreviewState(
         double confidence,
         double fps,
         List<PreviewDetection> detections,
-        Instant updatedAt
+        Instant updatedAt,
+        PreviewLine line,
+        int entered,
+        int exited,
+        int balance,
+        int activeTracks
 ) {
     public static PreviewState empty() {
-        return new PreviewState(false, "", 0, "", "", 0, 0, 0.0, 0.0, List.of(), null);
+        return new PreviewState(false, "", 0, "", "", 0, 0, 0.0, 0.0, List.of(), null, null, 0, 0, 0, 0);
     }
 }

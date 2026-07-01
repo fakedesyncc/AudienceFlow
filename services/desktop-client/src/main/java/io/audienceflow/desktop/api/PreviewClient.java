@@ -10,6 +10,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
@@ -29,7 +30,7 @@ public final class PreviewClient {
     }
 
     public CompletableFuture<byte[]> frame() {
-        return httpClient.sendAsync(request("/v1/frame.jpg"), HttpResponse.BodyHandlers.ofByteArray())
+        return httpClient.sendAsync(getRequest("/v1/frame.jpg"), HttpResponse.BodyHandlers.ofByteArray())
                 .thenApply(response -> {
                     ensureSuccess(response.statusCode(), response.body().length + " bytes");
                     return response.body();
@@ -37,7 +38,7 @@ public final class PreviewClient {
     }
 
     public CompletableFuture<PreviewState> state() {
-        return httpClient.sendAsync(request("/v1/state"), HttpResponse.BodyHandlers.ofString())
+        return httpClient.sendAsync(getRequest("/v1/state"), HttpResponse.BodyHandlers.ofString())
                 .thenApply(response -> {
                     ensureSuccess(response.statusCode(), response.body());
                     try {
@@ -48,14 +49,57 @@ public final class PreviewClient {
                 });
     }
 
-    private HttpRequest request(String path) {
+    public CompletableFuture<PreviewState> setLine(boolean enabled, int x1, int y1, int x2, int y2) {
+        return post(
+                "/v1/line",
+                Map.of(
+                        "enabled", enabled,
+                        "x1", x1,
+                        "y1", y1,
+                        "x2", x2,
+                        "y2", y2
+                )
+        );
+    }
+
+    public CompletableFuture<PreviewState> resetCounters() {
+        return post("/v1/counters/reset", Map.of());
+    }
+
+    private CompletableFuture<PreviewState> post(String path, Object payload) {
+        return httpClient.sendAsync(postRequest(path, payload), HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    ensureSuccess(response.statusCode(), response.body());
+                    try {
+                        return objectMapper.readValue(response.body(), PreviewState.class);
+                    } catch (IOException e) {
+                        throw new CompletionException(e);
+                    }
+                });
+    }
+
+    private HttpRequest getRequest(String path) {
+        return baseRequest(path).GET().build();
+    }
+
+    private HttpRequest postRequest(String path, Object payload) {
+        try {
+            return baseRequest(path)
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
+                    .build();
+        } catch (IOException e) {
+            throw new CompletionException(e);
+        }
+    }
+
+    private HttpRequest.Builder baseRequest(String path) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .timeout(Duration.ofSeconds(4))
-                .GET();
+                .timeout(Duration.ofSeconds(4));
         if (!token.isBlank()) {
             builder.header("X-Preview-Token", token);
         }
-        return builder.build();
+        return builder;
     }
 
     private void ensureSuccess(int statusCode, String body) {
