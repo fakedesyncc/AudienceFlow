@@ -240,8 +240,21 @@ export function liveSocketUrl(session: AuthSession): string | null {
   return url.toString();
 }
 
-export function parseLiveMessage(raw: string): LiveAttendanceMessage {
-  return JSON.parse(raw) as LiveAttendanceMessage;
+export function parseLiveMessage(raw: string): LiveAttendanceMessage | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    !Array.isArray((parsed as { rooms?: unknown }).rooms)
+  ) {
+    return null;
+  }
+  return parsed as LiveAttendanceMessage;
 }
 
 async function request<T>(path: string, init: RequestInit = {}, session: AuthSession | null): Promise<T> {

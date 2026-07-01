@@ -2,20 +2,23 @@ import {
   Activity,
   Building2,
   Camera,
+  CheckCircle2,
+  ChevronRight,
   Clock3,
   DoorOpen,
   Eye,
   Gauge,
   KeyRound,
+  Laptop,
+  Layers3,
   LogOut,
-  MapPin,
   Plus,
   RadioTower,
   RefreshCw,
-  Search,
   Server,
   ShieldCheck,
   Smartphone,
+  Sparkles,
   UserRound,
   Users,
   Wifi,
@@ -33,8 +36,8 @@ import {
   YAxis,
 } from 'recharts';
 import {
-  createPresentationSession,
   createCamera,
+  createPresentationSession,
   createRoom,
   createUser,
   fetchCameras,
@@ -42,13 +45,14 @@ import {
   fetchRooms,
   fetchTimeline,
   fetchUsers,
-  loadRuntimeConfig,
   liveSocketUrl,
+  loadRuntimeConfig,
   login,
   parseLiveMessage,
   saveRuntimeConfig,
   updateCamera,
 } from './api';
+import { normalizePreviewUrl, restoreSession, sessionStorageKey } from './session';
 import type {
   AuthSession,
   Camera as CameraType,
@@ -63,7 +67,7 @@ import type {
   UserView,
 } from './types';
 
-type View = 'monitoring' | 'overview' | 'rooms' | 'cameras' | 'mobile' | 'users';
+type View = 'live' | 'insights' | 'cameras' | 'rooms' | 'mobile' | 'access';
 type LiveState = 'presentation' | 'polling' | 'live' | 'offline';
 
 interface TelemetryEvent {
@@ -84,30 +88,68 @@ interface PreviewState {
   updated_at: string | null;
 }
 
-const sessionStorageKey = 'audienceflow.session';
+interface DashboardStats {
+  rooms: number;
+  totalPeople: number;
+  averageOccupancy: number;
+  attentionRooms: number;
+  onlineCameras: number;
+}
+
 const roleLabels: Record<Role, string> = {
   ADMIN: 'Администратор',
   TECHNICIAN: 'Техник',
   TEACHER: 'Преподаватель',
 };
 
-const cameraSourcePresets: Array<{
+const sourcePresets: Array<{
   id: string;
   label: string;
+  note: string;
   sourceUrl: string;
   streamType: CameraType['streamType'];
 }> = [
-  { id: 'sample', label: 'Public sample video', sourceUrl: 'sample', streamType: 'sample' },
-  { id: 'device0', label: 'Камера компьютера device:0', sourceUrl: 'device:0', streamType: 'device' },
-  { id: 'phone', label: 'Телефон как IP/MJPEG камера', sourceUrl: 'phone:http://192.168.1.10:8080/video', streamType: 'mjpeg' },
-  { id: 'rtsp', label: 'RTSP камера', sourceUrl: 'rtsp://camera-host/live', streamType: 'rtsp' },
-  { id: 'file', label: 'Локальный видеофайл', sourceUrl: '/absolute/path/to/video.mp4', streamType: 'file' },
+  {
+    id: 'sample',
+    label: 'Sample video',
+    note: 'Публичное видео для защиты без синтетической сцены',
+    sourceUrl: 'sample',
+    streamType: 'sample',
+  },
+  {
+    id: 'device',
+    label: 'Камера ноутбука',
+    note: 'Запуск worker на host: CAMERA_SOURCE=device:0',
+    sourceUrl: 'device:0',
+    streamType: 'device',
+  },
+  {
+    id: 'phone',
+    label: 'Телефон как IP camera',
+    note: 'MJPEG/RTSP приложение в одной защищённой сети',
+    sourceUrl: 'phone:http://192.168.1.10:8080/video',
+    streamType: 'mjpeg',
+  },
+  {
+    id: 'rtsp',
+    label: 'RTSP камера',
+    note: 'Камера аудитории или NVR поток',
+    sourceUrl: 'rtsp://camera-host/live',
+    streamType: 'rtsp',
+  },
+  {
+    id: 'file',
+    label: 'Видео файл',
+    note: 'Локальный mp4/mov для тестов и отчёта',
+    sourceUrl: '/absolute/path/to/video.mp4',
+    streamType: 'file',
+  },
 ];
 
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => restoreSession());
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
-  const [activeView, setActiveView] = useState<View>('monitoring');
+  const [activeView, setActiveView] = useState<View>('live');
   const [current, setCurrent] = useState<CurrentAttendance[]>([]);
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -117,14 +159,14 @@ export function App() {
   const [liveState, setLiveState] = useState<LiveState>('offline');
   const [lastSnapshotAt, setLastSnapshotAt] = useState<Date | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
-  const [selectedMonitoringRoomId, setSelectedMonitoringRoomId] = useState<number | null>(null);
-  const [monitorBuilding, setMonitorBuilding] = useState('all');
-  const [monitorStatus, setMonitorStatus] = useState<'all' | CurrentAttendance['status']>('all');
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const liveSocketRef = useRef<WebSocket | null>(null);
 
   const canManageInfrastructure = session?.user.role === 'ADMIN' || session?.user.role === 'TECHNICIAN';
   const isAdmin = session?.user.role === 'ADMIN';
+  const stats = useMemo(() => buildStats(current, cameras), [current, cameras]);
+  const selectedRoom = current.find((item) => item.roomId === selectedRoomId) ?? current[0] ?? null;
 
   const loadData = useCallback(async () => {
     if (!session) {
@@ -138,14 +180,17 @@ export function App() {
         fetchRooms(session),
         fetchCameras(session),
       ]);
-      applySnapshot(currentData, session.demo ? 'presentation' : 'polling');
       setRooms(roomData);
       setCameras(cameraData);
+      // While a live WebSocket owns 'current', polling must not override it.
+      if (liveSocketRef.current?.readyState !== WebSocket.OPEN) {
+        applySnapshot(currentData, session.demo ? 'presentation' : 'polling');
+      }
       if (session.user.role === 'ADMIN') {
         setUsers(await fetchUsers(session));
       }
-      if (selectedRoomId === null && roomData.length > 0) {
-        setSelectedRoomId(roomData[0].id);
+      if (selectedRoomId === null && currentData.length > 0) {
+        setSelectedRoomId(currentData[0].roomId);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить данные');
@@ -159,7 +204,7 @@ export function App() {
       return;
     }
     void loadData();
-    const interval = window.setInterval(() => void loadData(), session.demo ? 2500 : 5000);
+    const interval = window.setInterval(() => void loadData(), session.demo ? 2400 : 5000);
     return () => window.clearInterval(interval);
   }, [loadData, session]);
 
@@ -180,62 +225,68 @@ export function App() {
     if (!url) {
       return;
     }
-    const socket = new WebSocket(url);
-    socket.onopen = () => setLiveState('live');
-    socket.onmessage = (event) => {
-      const message = parseLiveMessage(event.data);
-      applySnapshot(message.rooms, 'live');
+
+    let mounted = true;
+    let attempt = 0;
+    let reconnectTimer: number | undefined;
+
+    function connect() {
+      if (!mounted) {
+        return;
+      }
+      const socket = new WebSocket(url as string);
+      liveSocketRef.current = socket;
+
+      socket.onopen = () => {
+        attempt = 0;
+        setLiveState('live');
+      };
+      socket.onmessage = (event) => {
+        const message = parseLiveMessage(event.data);
+        if (!message) {
+          return;
+        }
+        applySnapshot(message.rooms, 'live');
+      };
+      socket.onerror = () => {
+        setError('Live-канал временно недоступен, включён polling');
+      };
+      socket.onclose = () => {
+        if (liveSocketRef.current === socket) {
+          liveSocketRef.current = null;
+        }
+        if (!mounted) {
+          return;
+        }
+        setLiveState('polling');
+        // Reconnect with capped exponential backoff + jitter so polling
+        // hands ownership of 'current' back to the live socket once it recovers.
+        const backoff = Math.min(30_000, 1_000 * 2 ** attempt);
+        attempt += 1;
+        const delay = backoff + Math.random() * 1_000;
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+    }
+
+    connect();
+
+    return () => {
+      mounted = false;
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer);
+      }
+      const socket = liveSocketRef.current;
+      liveSocketRef.current = null;
+      socket?.close();
     };
-    socket.onerror = () => {
-      setLiveState('polling');
-      setError('Live-подключение временно недоступно, включён резервный polling');
-    };
-    socket.onclose = () => setLiveState('polling');
-    return () => socket.close();
   }, [session]);
-
-  useEffect(() => {
-    if (current.length === 0) {
-      setSelectedMonitoringRoomId(null);
-      return;
-    }
-    if (selectedMonitoringRoomId === null || !current.some((item) => item.roomId === selectedMonitoringRoomId)) {
-      setSelectedMonitoringRoomId(current[0].roomId);
-    }
-  }, [current, selectedMonitoringRoomId]);
-
-  const panelStats = useMemo(() => buildStats(current, cameras), [current, cameras]);
-
-  if (!session) {
-    return (
-      <LoginScreen
-        config={runtimeConfig}
-        onConfigChange={(config) => setRuntimeConfig(saveRuntimeConfig(config))}
-        onLogin={setSession}
-      />
-    );
-  }
-
-  const navigation = [
-    { id: 'monitoring' as View, label: 'Оперативно', icon: RadioTower, enabled: true },
-    { id: 'overview' as View, label: 'Аналитика', icon: Activity, enabled: true },
-    { id: 'rooms' as View, label: 'Аудитории', icon: DoorOpen, enabled: true },
-    { id: 'cameras' as View, label: 'Камеры', icon: Camera, enabled: true },
-    { id: 'mobile' as View, label: 'Mobile', icon: Smartphone, enabled: true },
-    { id: 'users' as View, label: 'Доступ', icon: Users, enabled: isAdmin },
-  ].filter((item) => item.enabled);
-
-  function handleLogout() {
-    window.sessionStorage.removeItem(sessionStorageKey);
-    setSession(null);
-  }
 
   function applySnapshot(items: CurrentAttendance[], state: LiveState) {
     const receivedAt = new Date();
     setCurrent(items);
     setLastSnapshotAt(receivedAt);
     setLiveState(state);
-    setTelemetry((previous) => buildTelemetryEvents(items, receivedAt, previous));
+    setTelemetry((previous) => buildTelemetry(items, receivedAt, previous));
   }
 
   async function handleCreateRoom(payload: CreateRoomPayload) {
@@ -244,7 +295,6 @@ export function App() {
     }
     const room = await createRoom(session, payload);
     setRooms((items) => [...items, room]);
-    setSelectedRoomId(room.id);
     await loadData();
   }
 
@@ -274,125 +324,129 @@ export function App() {
     setUsers((items) => [...items, user]);
   }
 
+  function handleLogout() {
+    window.sessionStorage.removeItem(sessionStorageKey);
+    setSession(null);
+  }
+
+  if (!session) {
+    return (
+      <LoginScreen
+        config={runtimeConfig}
+        onConfigChange={(config) => setRuntimeConfig(saveRuntimeConfig(config))}
+        onLogin={setSession}
+      />
+    );
+  }
+
+  const navigation = [
+    { id: 'live' as View, label: 'Live', shortLabel: 'Live', icon: RadioTower },
+    { id: 'insights' as View, label: 'Аналитика', shortLabel: 'Графики', icon: Activity },
+    { id: 'cameras' as View, label: 'Камеры', shortLabel: 'Камеры', icon: Camera },
+    { id: 'rooms' as View, label: 'Аудитории', shortLabel: 'Залы', icon: DoorOpen },
+    { id: 'mobile' as View, label: 'Mobile', shortLabel: 'Phone', icon: Smartphone },
+    ...(isAdmin ? [{ id: 'access' as View, label: 'Доступ', shortLabel: 'Доступ', icon: ShieldCheck }] : []),
+  ];
+
   return (
     <div className="app-shell">
-      <aside className="app-sidebar">
-        <div className="sidebar-brand">
-          <div className="brand">
-            <div className="brand-mark">
-              <Gauge size={22} />
-            </div>
-            <div>
-              <strong>AudienceFlow</strong>
-              <span>ЛГТУ · мониторинг аудиторий</span>
-            </div>
+      <header className="app-topbar">
+        <div className="brand-block">
+          <div className="brand-mark">
+            <Gauge size={22} />
+          </div>
+          <div>
+            <strong>AudienceFlow</strong>
+            <span>{session.demo ? 'Презентационный контур' : 'API контур'}</span>
           </div>
         </div>
 
-        <nav className="nav-list" aria-label="Разделы системы">
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                className={activeView === item.id ? 'nav-item active' : 'nav-item'}
-                onClick={() => setActiveView(item.id)}
-                title={item.label}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
+        <nav className="top-nav" aria-label="Разделы">
+          {navigation.map((item) => (
+            <NavButton
+              key={item.id}
+              active={activeView === item.id}
+              icon={<item.icon size={18} />}
+              label={item.label}
+              onClick={() => setActiveView(item.id)}
+            />
+          ))}
         </nav>
 
-        <div className="sidebar-state">
-          <LiveBadge state={liveState} />
-          <span>{lastSnapshotAt ? `Снимок ${formatClock(lastSnapshotAt)}` : 'Ожидание данных'}</span>
-          <small>{session.demo ? 'Презентационный контур без рабочих секретов' : session.apiUrl}</small>
+        <div className="session-tools">
+          <StatusPill state={liveState} />
+          <button className="tool-button" onClick={() => void loadData()} title="Обновить">
+            <RefreshCw size={18} className={loading ? 'spin' : ''} />
+          </button>
+          <button className="profile-button" title={`${session.user.displayName} · ${roleLabels[session.user.role]}`}>
+            <UserRound size={17} />
+            <span>{roleLabels[session.user.role]}</span>
+          </button>
+          <button className="tool-button" onClick={handleLogout} title="Выйти">
+            <LogOut size={18} />
+          </button>
         </div>
-      </aside>
+      </header>
 
-      <main className="app-main">
-        <header className="topbar">
-          <div className="topbar-title">
-            <span>AudienceFlow · {session.demo ? 'презентационный контур' : 'API-контур'}</span>
-            <h1>{viewTitle(activeView)}</h1>
-            <p>
-              {session.demo
-                ? 'Обезличенный поток для показа интерфейса. Рабочие учётные записи и токены не встроены.'
-                : new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date())}
-            </p>
+      <main className="workspace">
+        {error && (
+          <div className="error-banner">
+            <span>{error}</span>
+            <button onClick={() => setError(null)}>Закрыть</button>
           </div>
-          <div className="topbar-actions">
-            <RoleBadge role={session.user.role} />
-            <div className="profile-chip header-profile">
-              <UserRound size={17} />
-              <div>
-                <strong>{session.user.displayName}</strong>
-                <span>{roleLabels[session.user.role]}</span>
-              </div>
-            </div>
-            <button className="icon-button" onClick={() => void loadData()} title="Обновить">
-              <RefreshCw size={18} className={loading ? 'spin' : ''} />
-            </button>
-            <button className="icon-button" onClick={handleLogout} title="Выйти">
-              <LogOut size={17} />
-            </button>
-          </div>
-        </header>
+        )}
 
-        <section className="workspace">
-          {error && (
-            <div className="error-banner">
-              <span>{error}</span>
-              <button onClick={() => setError(null)}>Закрыть</button>
-            </div>
-          )}
-
-          {activeView === 'overview' && (
-            <Overview
-              current={current}
-              timeline={timeline}
-              rooms={rooms}
-              stats={panelStats}
-              selectedRoomId={selectedRoomId}
-              onSelectRoom={setSelectedRoomId}
-            />
-          )}
-          {activeView === 'monitoring' && (
-            <MonitoringView
-              current={current}
-              cameras={cameras}
-              stats={panelStats}
-              telemetry={telemetry}
-              liveState={liveState}
-              lastSnapshotAt={lastSnapshotAt}
-              selectedRoomId={selectedMonitoringRoomId}
-              buildingFilter={monitorBuilding}
-              statusFilter={monitorStatus}
-              onSelectRoom={setSelectedMonitoringRoomId}
-              onBuildingChange={setMonitorBuilding}
-              onStatusChange={setMonitorStatus}
-              onRefresh={loadData}
-            />
-          )}
-          {activeView === 'rooms' && (
-            <RoomsView rooms={rooms} canManage={Boolean(canManageInfrastructure)} onCreate={handleCreateRoom} />
-          )}
-          {activeView === 'cameras' && (
-            <CamerasView
-              cameras={cameras}
-              rooms={rooms}
-              canManage={Boolean(canManageInfrastructure)}
-              onCreate={handleCreateCamera}
-              onUpdate={handleUpdateCamera}
-            />
-          )}
-          {activeView === 'mobile' && <MobileView />}
-          {activeView === 'users' && isAdmin && <UsersView users={users} onCreate={handleCreateUser} />}
-        </section>
+        {activeView === 'live' && (
+          <LiveView
+            stats={stats}
+            current={current}
+            cameras={cameras}
+            selectedRoom={selectedRoom}
+            onSelectRoom={setSelectedRoomId}
+            telemetry={telemetry}
+            lastSnapshotAt={lastSnapshotAt}
+            liveState={liveState}
+          />
+        )}
+        {activeView === 'insights' && (
+          <InsightsView
+            stats={stats}
+            rooms={rooms}
+            current={current}
+            timeline={timeline}
+            selectedRoomId={selectedRoomId}
+            onSelectRoom={setSelectedRoomId}
+          />
+        )}
+        {activeView === 'cameras' && (
+          <CamerasView
+            cameras={cameras}
+            rooms={rooms}
+            canManage={Boolean(canManageInfrastructure)}
+            onCreate={handleCreateCamera}
+            onUpdate={handleUpdateCamera}
+          />
+        )}
+        {activeView === 'rooms' && (
+          <RoomsView rooms={rooms} current={current} canManage={Boolean(canManageInfrastructure)} onCreate={handleCreateRoom} />
+        )}
+        {activeView === 'mobile' && <MobileView />}
+        {activeView === 'access' && isAdmin && <AccessView users={users} onCreate={handleCreateUser} />}
       </main>
+
+      <nav className="mobile-nav" aria-label="Мобильная навигация">
+        {navigation.map((item) => (
+          <button
+            key={item.id}
+            className={activeView === item.id ? 'active' : ''}
+            onClick={() => setActiveView(item.id)}
+            title={item.label}
+          >
+            <item.icon size={19} />
+            <span>{item.shortLabel}</span>
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
@@ -406,26 +460,24 @@ function LoginScreen({
   onConfigChange: (config: RuntimeConfig) => void;
   onLogin: (session: AuthSession) => void;
 }) {
+  const [draftConfig, setDraftConfig] = useState(config);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [draftConfig, setDraftConfig] = useState(config);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    setDraftConfig(config);
-  }, [config]);
+  useEffect(() => setDraftConfig(config), [config]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      const savedConfig = saveRuntimeConfig(draftConfig);
+      const savedConfig = saveRuntimeConfig({ ...draftConfig, mode: 'api' });
       onConfigChange(savedConfig);
-      const session = await login(email, password, savedConfig);
-      window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(session));
-      onLogin(session);
+      const authSession = await login(email, password, savedConfig);
+      window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(authSession));
+      onLogin(authSession);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось войти');
     } finally {
@@ -436,54 +488,51 @@ function LoginScreen({
   function openPresentation() {
     const savedConfig = saveRuntimeConfig({ ...draftConfig, mode: 'demo' });
     onConfigChange(savedConfig);
-    const session = createPresentationSession();
-    window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(session));
-    onLogin(session);
+    const authSession = createPresentationSession();
+    window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(authSession));
+    onLogin(authSession);
   }
 
   return (
     <main className="login-screen">
-      <section className="login-panel">
-        <div className="brand login-brand">
-          <div className="brand-mark">
-            <Gauge size={26} />
+      <section className="login-workspace">
+        <div className="login-visual">
+          <div className="brand-block login-brand">
+            <div className="brand-mark">
+              <Gauge size={24} />
+            </div>
+            <div>
+              <strong>AudienceFlow</strong>
+              <span>Real-time аудитории и камеры</span>
+            </div>
           </div>
-          <div>
-            <strong>AudienceFlow</strong>
-            <span>{draftConfig.mode === 'demo' ? 'Презентационный мониторинг' : 'Защищённый вход'}</span>
-          </div>
+          <DemoScene compact />
         </div>
 
-        <form onSubmit={submit} className="login-form">
-          <div className="mode-switch" role="group" aria-label="Режим подключения">
-            <button
-              type="button"
-              className={draftConfig.mode === 'demo' ? 'selected' : ''}
-              onClick={() => setDraftConfig({ ...draftConfig, mode: 'demo' })}
-            >
+        <form className="login-card" onSubmit={submit}>
+          <span className="eyebrow">Защищённый вход</span>
+          <h1>Мониторинг, который можно показать с телефона и с рабочего места</h1>
+          <p>Pages не содержит рабочих логинов, паролей или токенов. Для защиты можно открыть презентационный режим или подключить свой API.</p>
+
+          <div className="mode-switch">
+            <button type="button" className={draftConfig.mode === 'demo' ? 'selected' : ''} onClick={() => setDraftConfig({ ...draftConfig, mode: 'demo' })}>
               Презентация
             </button>
-            <button
-              type="button"
-              className={draftConfig.mode === 'api' ? 'selected' : ''}
-              onClick={() => setDraftConfig({ ...draftConfig, mode: 'api' })}
-            >
+            <button type="button" className={draftConfig.mode === 'api' ? 'selected' : ''} onClick={() => setDraftConfig({ ...draftConfig, mode: 'api' })}>
               API
             </button>
           </div>
 
           {draftConfig.mode === 'demo' ? (
-            <div className="presentation-entry">
-              <div className="presentation-icon">
-                <Eye size={22} />
-              </div>
+            <div className="presentation-box">
+              <Sparkles size={22} />
               <div>
-                <strong>Без демонстрационных логинов и паролей</strong>
-                <span>Открывается обезличенный мониторинг с имитацией потока данных. Рабочие учётные записи здесь не хранятся.</span>
+                <strong>Открыть обезличенный live-контур</strong>
+                <span>Подходит для GitHub Pages и показа преподавателю без локального backend.</span>
               </div>
               <button type="button" className="primary-button" onClick={openPresentation}>
-                <RadioTower size={18} />
-                <span>Открыть мониторинг</span>
+                Открыть демо
+                <ChevronRight size={18} />
               </button>
             </div>
           ) : (
@@ -493,20 +542,14 @@ function LoginScreen({
                 <input
                   value={draftConfig.apiUrl}
                   onChange={(event) => setDraftConfig({ ...draftConfig, apiUrl: event.target.value })}
-                  placeholder="https://example.com/api"
+                  placeholder="https://example.edu/api"
                   autoComplete="url"
                   required
                 />
               </label>
               <label>
                 Email
-                <input
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  type="email"
-                  autoComplete="username"
-                  required
-                />
+                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="username" required />
               </label>
               <label>
                 Пароль
@@ -514,15 +557,15 @@ function LoginScreen({
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   type="password"
-                  minLength={12}
                   autoComplete="current-password"
+                  minLength={12}
                   required
                 />
               </label>
               {error && <div className="form-error">{error}</div>}
               <button className="primary-button" disabled={submitting}>
                 <KeyRound size={18} />
-                <span>{submitting ? 'Вход...' : 'Войти'}</span>
+                {submitting ? 'Входим...' : 'Войти'}
               </button>
             </>
           )}
@@ -532,226 +575,100 @@ function LoginScreen({
   );
 }
 
-function MonitoringView({
+function LiveView({
+  stats,
   current,
   cameras,
-  stats,
-  telemetry,
-  liveState,
-  lastSnapshotAt,
-  selectedRoomId,
-  buildingFilter,
-  statusFilter,
+  selectedRoom,
   onSelectRoom,
-  onBuildingChange,
-  onStatusChange,
-  onRefresh,
+  telemetry,
+  lastSnapshotAt,
+  liveState,
 }: {
+  stats: DashboardStats;
   current: CurrentAttendance[];
   cameras: CameraType[];
-  stats: DashboardStats;
-  telemetry: TelemetryEvent[];
-  liveState: LiveState;
-  lastSnapshotAt: Date | null;
-  selectedRoomId: number | null;
-  buildingFilter: string;
-  statusFilter: 'all' | CurrentAttendance['status'];
+  selectedRoom: CurrentAttendance | null;
   onSelectRoom: (roomId: number) => void;
-  onBuildingChange: (building: string) => void;
-  onStatusChange: (status: 'all' | CurrentAttendance['status']) => void;
-  onRefresh: () => Promise<void>;
+  telemetry: TelemetryEvent[];
+  lastSnapshotAt: Date | null;
+  liveState: LiveState;
 }) {
-  const buildings = Array.from(new Set(current.map((item) => item.building))).sort((left, right) =>
-    left.localeCompare(right, 'ru'),
-  );
-  const filteredRooms = current.filter((item) => {
-    const buildingMatch = buildingFilter === 'all' || item.building === buildingFilter;
-    const statusMatch = statusFilter === 'all' || item.status === statusFilter;
-    return buildingMatch && statusMatch;
-  });
-  const selectedRoom =
-    current.find((item) => item.roomId === selectedRoomId) ?? filteredRooms[0] ?? current[0] ?? null;
   const selectedCamera = selectedRoom ? cameras.find((camera) => camera.roomId === selectedRoom.roomId) : null;
-  const busiest = [...current].sort((left, right) => right.occupancyPercent - left.occupancyPercent)[0] ?? null;
-  const maintenanceCount = cameras.filter((camera) => camera.status === 'maintenance').length;
-  const attentionCount = current.filter((item) => item.status !== 'normal').length;
-  const onlineCount = cameras.filter((camera) => camera.status === 'online').length;
+  const visibleRooms = [...current].sort((left, right) => right.occupancyPercent - left.occupancyPercent);
 
   return (
-    <div className="ops-console">
-      <section className="ops-statusbar">
-        <div className="ops-title">
-          <span>Липецкий государственный технический университет</span>
-          <h2>Оперативный центр посещаемости</h2>
-        </div>
-        <div className="ops-signal-group">
-          <LiveBadge state={liveState} />
-          <div className="signal-time">
-            <Clock3 size={18} />
-            <span>{lastSnapshotAt ? formatClock(lastSnapshotAt) : 'ожидание данных'}</span>
+    <div className="live-layout">
+      <section className="live-stage-panel">
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow">Оперативный центр</span>
+            <h1>Живая картина аудиторий</h1>
           </div>
-          <button className="icon-button" onClick={() => void onRefresh()} title="Запросить свежий снимок">
-            <RefreshCw size={17} />
-          </button>
+          <div className="snapshot-chip">
+            <Clock3 size={17} />
+            {lastSnapshotAt ? formatClock(lastSnapshotAt) : 'ожидание'}
+          </div>
+        </div>
+        <DemoScene />
+        <div className="hero-metrics">
+          <MetricCard icon={<Users size={20} />} label="Людей сейчас" value={stats.totalPeople} tone="blue" />
+          <MetricCard icon={<DoorOpen size={20} />} label="Аудиторий" value={stats.rooms} tone="green" />
+          <MetricCard icon={<Activity size={20} />} label="Средняя загрузка" value={`${stats.averageOccupancy}%`} tone="amber" />
+          <MetricCard icon={<Wifi size={20} />} label="Камер онлайн" value={stats.onlineCameras} tone="red" />
         </div>
       </section>
 
-      <section className="ops-kpis">
-        <Metric icon={<DoorOpen size={20} />} label="Аудиторий в контуре" value={stats.rooms} accent="teal" />
-        <Metric icon={<Users size={20} />} label="Людей сейчас" value={stats.totalPeople} accent="blue" />
-        <Metric icon={<Activity size={20} />} label="Требуют внимания" value={attentionCount} accent="violet" />
-        <Metric icon={<Wrench size={20} />} label="Камер онлайн / сервис" value={`${onlineCount}/${maintenanceCount}`} accent="amber" />
-      </section>
-
-      <section className="ops-workspace">
-        <div className="panel ops-board">
-          <div className="panel-header ops-board-header">
+      <aside className="focus-panel">
+        <div className="focus-card">
+          <div className="section-heading compact">
             <div>
-              <h2>Аудиторный фонд в реальном времени</h2>
-              <span>{busiest ? `Пиковая загрузка сейчас: ${busiest.roomName}` : 'Нет активных измерений'}</span>
+              <span className="eyebrow">Выбранная аудитория</span>
+              <h2>{selectedRoom?.roomName ?? 'Нет данных'}</h2>
             </div>
-            <div className="ops-filters">
-              <label>
-                <span>Корпус</span>
-                <select value={buildingFilter} onChange={(event) => onBuildingChange(event.target.value)}>
-                  <option value="all">Все корпуса</option>
-                  {buildings.map((building) => (
-                    <option key={building} value={building}>
-                      {building}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Статус</span>
-                <select
-                  value={statusFilter}
-                  onChange={(event) => onStatusChange(event.target.value as 'all' | CurrentAttendance['status'])}
-                >
-                  <option value="all">Все статусы</option>
-                  <option value="normal">Норма</option>
-                  <option value="warning">Высокая загрузка</option>
-                  <option value="full">Переполнение</option>
-                </select>
-              </label>
-            </div>
-          </div>
-
-          <div className="room-state-table-wrap">
-            <table className="room-state-table">
-              <thead>
-                <tr>
-                  <th>Аудитория</th>
-                  <th>Корпус</th>
-                  <th>Люди</th>
-                  <th>Загрузка</th>
-                  <th>Сигнал</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRooms.map((item) => (
-                  <tr className={item.roomId === selectedRoom?.roomId ? 'selected' : ''} key={item.roomId}>
-                    <td>
-                      <button className="room-link" onClick={() => onSelectRoom(item.roomId)}>
-                        <MapPin size={16} />
-                        <span>{item.roomName}</span>
-                      </button>
-                    </td>
-                    <td>
-                      <span className="muted-text">
-                        {item.building}, этаж {item.floor}
-                      </span>
-                    </td>
-                    <td>
-                      <strong>
-                        {item.count}/{item.capacity}
-                      </strong>
-                    </td>
-                    <td>
-                      <div className="occupancy-cell">
-                        <div className="progress-track">
-                          <div className={`progress-fill ${item.status}`} style={{ width: `${Math.min(100, item.occupancyPercent)}%` }} />
-                        </div>
-                        <span>{item.occupancyPercent}%</span>
-                      </div>
-                    </td>
-                    <td>
-                      <span className={`room-status ${item.status}`}>{statusLabel(item.status)}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {filteredRooms.length === 0 && (
-              <div className="empty-feed">
-                <Search size={18} />
-                <span>По выбранным фильтрам нет аудиторий.</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <aside className="panel room-inspector">
-          <div className="panel-header">
-            <div>
-              <h2>{selectedRoom ? selectedRoom.roomName : 'Аудитория не выбрана'}</h2>
-              <span>{selectedRoom ? `${selectedRoom.building}, этаж ${selectedRoom.floor}` : 'Выберите строку в таблице'}</span>
-            </div>
-            <Server size={20} />
+            <StatusPill state={liveState} />
           </div>
           {selectedRoom ? (
             <>
-              <div className="inspector-count">
+              <div className="big-count">
                 <strong>{selectedRoom.count}</strong>
                 <span>из {selectedRoom.capacity} мест</span>
               </div>
-              <div className="progress-track inspector-progress">
-                <div className={`progress-fill ${selectedRoom.status}`} style={{ width: `${Math.min(100, selectedRoom.occupancyPercent)}%` }} />
-              </div>
-              <dl className="inspector-list">
+              <Progress value={selectedRoom.occupancyPercent} status={selectedRoom.status} />
+              <dl className="detail-list">
                 <div>
-                  <dt>Заполненность</dt>
-                  <dd>{selectedRoom.occupancyPercent}%</dd>
+                  <dt>Корпус</dt>
+                  <dd>{selectedRoom.building}, этаж {selectedRoom.floor}</dd>
                 </div>
                 <div>
                   <dt>Достоверность</dt>
                   <dd>{Math.round(selectedRoom.confidence * 100)}%</dd>
                 </div>
                 <div>
-                  <dt>Последнее измерение</dt>
-                  <dd>{selectedRoom.timestamp ? formatClock(new Date(selectedRoom.timestamp)) : 'нет сигнала'}</dd>
+                  <dt>Источник</dt>
+                  <dd>{selectedCamera ? `${selectedCamera.name} · ${streamLabel(selectedCamera.streamType)}` : 'камера не назначена'}</dd>
                 </div>
               </dl>
-              <div className="camera-inspector">
-                <div className={selectedCamera?.status === 'online' ? 'camera-dot online' : 'camera-dot'}>
-                  {selectedCamera?.status === 'online' ? <Wifi size={16} /> : <WifiOff size={16} />}
-                </div>
-                <div>
-                  <strong>{selectedCamera?.name ?? 'Камера не назначена'}</strong>
-                  <span>{selectedCamera ? streamLabel(selectedCamera.streamType) : 'Добавляется в разделе камер'}</span>
-                </div>
-                {selectedCamera && <StatusBadge status={selectedCamera.status} />}
-              </div>
             </>
           ) : (
-            <div className="empty-feed">Нет данных для выбранного контура.</div>
+            <EmptyState>Нет активных измерений.</EmptyState>
           )}
-        </aside>
+        </div>
 
-        <div className="panel ops-feed-panel">
-          <div className="panel-header">
+        <div className="event-card">
+          <div className="section-heading compact">
             <div>
-              <h2>Лента событий</h2>
-              <span>Последние изменения состояния</span>
+              <span className="eyebrow">События</span>
+              <h2>Лента состояния</h2>
             </div>
-            <RadioTower size={20} />
+            <RadioTower size={19} />
           </div>
-          <div className="telemetry-feed">
+          <div className="event-feed">
             {telemetry.length === 0 ? (
-              <div className="empty-feed">Ожидание первого снимка.</div>
+              <EmptyState>Ожидание первого снимка.</EmptyState>
             ) : (
-              telemetry.map((event) => (
-                <article className={`telemetry-event ${event.status}`} key={event.id}>
+              telemetry.slice(0, 6).map((event) => (
+                <article className={`event-item ${event.status}`} key={event.id}>
                   <time>{formatClock(event.ts)}</time>
                   <div>
                     <strong>{event.title}</strong>
@@ -762,23 +679,33 @@ function MonitoringView({
             )}
           </div>
         </div>
+      </aside>
+
+      <section className="room-strip">
+        {visibleRooms.map((room) => (
+          <button key={room.roomId} className={`room-tile ${room.status}`} onClick={() => onSelectRoom(room.roomId)}>
+            <span>{room.roomName}</span>
+            <strong>{room.occupancyPercent}%</strong>
+            <Progress value={room.occupancyPercent} status={room.status} />
+          </button>
+        ))}
       </section>
     </div>
   );
 }
 
-function Overview({
+function InsightsView({
+  stats,
+  rooms,
   current,
   timeline,
-  rooms,
-  stats,
   selectedRoomId,
   onSelectRoom,
 }: {
+  stats: DashboardStats;
+  rooms: Room[];
   current: CurrentAttendance[];
   timeline: TimelinePoint[];
-  rooms: Room[];
-  stats: DashboardStats;
   selectedRoomId: number | null;
   onSelectRoom: (roomId: number) => void;
 }) {
@@ -789,25 +716,14 @@ function Overview({
   }));
 
   return (
-    <div className="content-grid">
-      <section className="metrics-row">
-        <Metric icon={<DoorOpen size={20} />} label="Аудитории" value={stats.rooms} accent="teal" />
-        <Metric icon={<Activity size={20} />} label="Средняя загрузка" value={`${stats.averageOccupancy}%`} accent="blue" />
-        <Metric icon={<Users size={20} />} label="Людей сейчас" value={stats.totalPeople} accent="violet" />
-        <Metric icon={<Wifi size={20} />} label="Камер онлайн" value={stats.onlineCameras} accent="amber" />
-      </section>
-
-      <section className="panel chart-panel">
-        <div className="panel-header">
+    <div className="insights-grid">
+      <section className="chart-card">
+        <div className="section-heading">
           <div>
-            <h2>Динамика за 24 часа</h2>
-            <span>Бакет 5 минут</span>
+            <span className="eyebrow">Аналитика</span>
+            <h1>Динамика загрузки</h1>
           </div>
-          <select
-            value={selectedRoomId ?? ''}
-            onChange={(event) => onSelectRoom(Number(event.target.value))}
-            aria-label="Аудитория для графика"
-          >
+          <select value={selectedRoomId ?? ''} onChange={(event) => onSelectRoom(Number(event.target.value))} aria-label="Аудитория">
             {rooms.map((room) => (
               <option key={room.id} value={room.id}>
                 {room.name}
@@ -817,126 +733,42 @@ function Overview({
         </div>
         <div className="chart-wrap">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 8, right: 16, left: -20, bottom: 4 }}>
+            <AreaChart data={chartData} margin={{ top: 8, right: 12, left: -18, bottom: 0 }}>
               <defs>
-                <linearGradient id="avgGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#0f9f8f" stopOpacity={0.35} />
-                  <stop offset="95%" stopColor="#0f9f8f" stopOpacity={0.04} />
+                <linearGradient id="peopleGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#2563eb" stopOpacity={0.28} />
+                  <stop offset="95%" stopColor="#2563eb" stopOpacity={0.02} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#d8dee7" />
+              <CartesianGrid vertical={false} stroke="#dfe6ef" />
               <XAxis dataKey="time" tick={{ fontSize: 12 }} minTickGap={24} />
               <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #d8dee7' }} />
-              <Area type="monotone" dataKey="avg" stroke="#0f9f8f" fill="url(#avgGradient)" strokeWidth={2} />
-              <Area type="monotone" dataKey="peak" stroke="#4568dc" fill="transparent" strokeWidth={2} />
+              <Tooltip contentStyle={{ borderRadius: 14, border: '1px solid #dfe6ef' }} />
+              <Area type="monotone" dataKey="avg" stroke="#2563eb" fill="url(#peopleGradient)" strokeWidth={2.5} />
+              <Area type="monotone" dataKey="peak" stroke="#ef4444" fill="transparent" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
       </section>
 
-      <section className="room-grid">
-        {current.map((item) => (
-          <OccupancyCard key={item.roomId} item={item} />
+      <section className="insight-stack">
+        <MetricCard icon={<Layers3 size={20} />} label="Средняя загрузка" value={`${stats.averageOccupancy}%`} tone="blue" />
+        <MetricCard icon={<Wrench size={20} />} label="Требуют внимания" value={stats.attentionRooms} tone="red" />
+        <MetricCard icon={<Users size={20} />} label="Людей сейчас" value={stats.totalPeople} tone="green" />
+      </section>
+
+      <section className="density-grid">
+        {current.map((room) => (
+          <article className={`density-card ${room.status}`} key={room.roomId}>
+            <div>
+              <strong>{room.roomName}</strong>
+              <span>{room.building}, этаж {room.floor}</span>
+            </div>
+            <b>{room.count}/{room.capacity}</b>
+            <Progress value={room.occupancyPercent} status={room.status} />
+          </article>
         ))}
       </section>
-    </div>
-  );
-}
-
-function RoomsView({
-  rooms,
-  canManage,
-  onCreate,
-}: {
-  rooms: Room[];
-  canManage: boolean;
-  onCreate: (payload: CreateRoomPayload) => Promise<void>;
-}) {
-  const [form, setForm] = useState<CreateRoomPayload>({
-    name: '',
-    building: 'Главный корпус',
-    floor: '1',
-    capacity: 30,
-  });
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await onCreate(form);
-    setForm({ name: '', building: 'Главный корпус', floor: '1', capacity: 30 });
-  }
-
-  return (
-    <div className="split-layout">
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Аудитории</h2>
-          <span>{rooms.length}</span>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Название</th>
-                <th>Корпус</th>
-                <th>Этаж</th>
-                <th>Вместимость</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rooms.map((room) => (
-                <tr key={room.id}>
-                  <td>{room.name}</td>
-                  <td>{room.building}</td>
-                  <td>{room.floor}</td>
-                  <td>{room.capacity}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {canManage && (
-        <section className="panel form-panel">
-          <div className="panel-header">
-            <h2>Новая аудитория</h2>
-            <Building2 size={20} />
-          </div>
-          <form onSubmit={submit} className="stacked-form">
-            <label>
-              Название
-              <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
-            </label>
-            <label>
-              Корпус
-              <input
-                value={form.building}
-                onChange={(event) => setForm({ ...form, building: event.target.value })}
-                required
-              />
-            </label>
-            <label>
-              Этаж
-              <input value={form.floor} onChange={(event) => setForm({ ...form, floor: event.target.value })} required />
-            </label>
-            <label>
-              Вместимость
-              <input
-                value={form.capacity}
-                onChange={(event) => setForm({ ...form, capacity: Number(event.target.value) })}
-                type="number"
-                min={1}
-                required
-              />
-            </label>
-            <button className="primary-button">
-              <Plus size={18} />
-              <span>Добавить</span>
-            </button>
-          </form>
-        </section>
-      )}
     </div>
   );
 }
@@ -954,23 +786,13 @@ function CamerasView({
   onCreate: (payload: CreateCameraPayload) => Promise<void>;
   onUpdate: (id: number, payload: CreateCameraPayload) => Promise<void>;
 }) {
-  const emptyForm = useMemo<CreateCameraPayload>(() => ({
-    roomId: rooms[0]?.id ?? 1,
-    name: '',
-    sourceUrl: 'sample',
-    streamType: 'sample',
-    status: 'offline',
-    enabled: true,
-  }), [rooms]);
-  const [selectedCameraId, setSelectedCameraId] = useState<number | null>(null);
-  const [form, setForm] = useState<CreateCameraPayload>({
-    roomId: rooms[0]?.id ?? 1,
-    name: '',
-    sourceUrl: 'sample',
-    streamType: 'sample',
-    status: 'offline',
-    enabled: true,
-  });
+  const firstRoom = rooms[0]?.id ?? 1;
+  const emptyForm = useMemo<CreateCameraPayload>(
+    () => ({ roomId: firstRoom, name: '', sourceUrl: 'sample', streamType: 'sample', status: 'offline', enabled: true }),
+    [firstRoom],
+  );
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [form, setForm] = useState<CreateCameraPayload>(emptyForm);
 
   useEffect(() => {
     if (rooms.length > 0 && !rooms.some((room) => room.id === form.roomId)) {
@@ -978,18 +800,8 @@ function CamerasView({
     }
   }, [form.roomId, rooms]);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (selectedCameraId === null) {
-      await onCreate(form);
-      setForm({ ...emptyForm, roomId: form.roomId });
-      return;
-    }
-    await onUpdate(selectedCameraId, form);
-  }
-
   function selectCamera(camera: CameraType) {
-    setSelectedCameraId(camera.id);
+    setSelectedId(camera.id);
     setForm({
       roomId: camera.roomId,
       name: camera.name,
@@ -1000,134 +812,186 @@ function CamerasView({
     });
   }
 
-  function newCamera() {
-    setSelectedCameraId(null);
-    setForm({ ...emptyForm, roomId: form.roomId });
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (selectedId === null) {
+      await onCreate(form);
+      setForm({ ...emptyForm, roomId: form.roomId });
+      return;
+    }
+    await onUpdate(selectedId, form);
   }
 
   return (
-    <div className="split-layout">
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Камеры</h2>
-          <span>{cameras.length}</span>
+    <div className="source-layout">
+      <section className="source-board">
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow">Источники</span>
+            <h1>Камеры без магии</h1>
+          </div>
+          <button className="secondary-button" onClick={() => { setSelectedId(null); setForm(emptyForm); }}>
+            <Plus size={17} />
+            Новая
+          </button>
         </div>
-        <div className="camera-list">
-          {cameras.map((camera) => (
+
+        <div className="source-presets">
+          {sourcePresets.map((preset) => (
             <button
-              type="button"
-              className={camera.id === selectedCameraId ? 'camera-row selected' : 'camera-row'}
-              key={camera.id}
-              onClick={() => selectCamera(camera)}
+              key={preset.id}
+              onClick={() => setForm((value) => ({ ...value, sourceUrl: preset.sourceUrl, streamType: preset.streamType }))}
             >
-              <div className="camera-icon">
-                {camera.status === 'online' ? <Wifi size={18} /> : <WifiOff size={18} />}
+              <span>{preset.label}</span>
+              <small>{preset.note}</small>
+            </button>
+          ))}
+        </div>
+
+        <div className="camera-grid">
+          {cameras.map((camera) => (
+            <button key={camera.id} className={`camera-card ${camera.status} ${camera.id === selectedId ? 'selected' : ''}`} onClick={() => selectCamera(camera)}>
+              <div className="camera-card-top">
+                <span className="camera-icon">{camera.status === 'online' ? <Wifi size={18} /> : <WifiOff size={18} />}</span>
+                <StatusBadge status={camera.status} />
               </div>
-              <div>
-                <strong>{camera.name}</strong>
-                <span>{camera.roomName}</span>
-                <code>{camera.sourceUrl ?? 'источник скрыт'}</code>
-              </div>
-              <StatusBadge status={camera.status} />
+              <strong>{camera.name}</strong>
+              <span>{camera.roomName}</span>
+              <code>{camera.sourceUrl ?? 'источник скрыт ролью'}</code>
+              <small>{streamLabel(camera.streamType)}</small>
             </button>
           ))}
         </div>
       </section>
 
       {canManage && (
-        <section className="panel form-panel">
-          <div className="panel-header">
-            <div>
-              <h2>{selectedCameraId === null ? 'Подключить камеру' : 'Редактировать источник'}</h2>
-              <span>Источник отвечает за поток, из которого worker считает людей.</span>
-            </div>
-            <button type="button" className="icon-button" onClick={newCamera} title="Новая камера">
-              <Plus size={17} />
-            </button>
+        <form className="edit-panel" onSubmit={submit}>
+          <span className="eyebrow">{selectedId === null ? 'Новый источник' : 'Редактирование'}</span>
+          <h2>{selectedId === null ? 'Подключить камеру' : 'Сохранить источник'}</h2>
+          <label>
+            Аудитория
+            <select value={form.roomId} onChange={(event) => setForm({ ...form, roomId: Number(event.target.value) })}>
+              {rooms.map((room) => (
+                <option key={room.id} value={room.id}>
+                  {room.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Название
+            <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Камера входной зоны" required />
+          </label>
+          <label>
+            Источник
+            <input value={form.sourceUrl} onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })} placeholder="sample, device:0, rtsp://..." required />
+          </label>
+          <label>
+            Тип
+            <select value={form.streamType} onChange={(event) => setForm({ ...form, streamType: event.target.value as CameraType['streamType'] })}>
+              <option value="sample">Sample video</option>
+              <option value="device">Device</option>
+              <option value="mjpeg">MJPEG/IP camera</option>
+              <option value="rtsp">RTSP</option>
+              <option value="http">HTTP</option>
+              <option value="file">File</option>
+              <option value="simulation">Simulation fallback</option>
+            </select>
+          </label>
+          <label>
+            Статус
+            <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as CameraType['status'] })}>
+              <option value="online">Онлайн</option>
+              <option value="offline">Офлайн</option>
+              <option value="maintenance">Сервис</option>
+            </select>
+          </label>
+          <label className="check-row">
+            <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
+            Включена
+          </label>
+          <button className="primary-button">
+            {selectedId === null ? <Plus size={18} /> : <CheckCircle2 size={18} />}
+            {selectedId === null ? 'Добавить' : 'Сохранить'}
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function RoomsView({
+  rooms,
+  current,
+  canManage,
+  onCreate,
+}: {
+  rooms: Room[];
+  current: CurrentAttendance[];
+  canManage: boolean;
+  onCreate: (payload: CreateRoomPayload) => Promise<void>;
+}) {
+  const [form, setForm] = useState<CreateRoomPayload>({ name: '', building: 'Главный корпус', floor: '1', capacity: 30 });
+  const currentByRoom = new Map(current.map((item) => [item.roomId, item]));
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onCreate(form);
+    setForm({ name: '', building: 'Главный корпус', floor: '1', capacity: 30 });
+  }
+
+  return (
+    <div className="rooms-layout">
+      <section className="room-list-panel">
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow">Аудитории</span>
+            <h1>Фонд помещений</h1>
           </div>
-          <form onSubmit={submit} className="stacked-form">
-            <label>
-              Быстрый профиль
-              <select
-                value=""
-                onChange={(event) => {
-                  const preset = cameraSourcePresets.find((item) => item.id === event.target.value);
-                  if (preset) {
-                    setForm((value) => ({ ...value, sourceUrl: preset.sourceUrl, streamType: preset.streamType }));
-                  }
-                }}
-              >
-                <option value="">Выбрать шаблон источника</option>
-                {cameraSourcePresets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Аудитория
-              <select value={form.roomId} onChange={(event) => setForm({ ...form, roomId: Number(event.target.value) })}>
-                {rooms.map((room) => (
-                  <option key={room.id} value={room.id}>
-                    {room.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Название
-              <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
-            </label>
-            <label>
-              Источник
-              <input
-                value={form.sourceUrl}
-                onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })}
-                placeholder="sample, device:0, phone:http://host/video, rtsp://..."
-                required
-              />
-            </label>
-            <label>
-              Тип
-              <select
-                value={form.streamType}
-                onChange={(event) => setForm({ ...form, streamType: event.target.value as CameraType['streamType'] })}
-              >
-                <option value="rtsp">RTSP</option>
-                <option value="http">HTTP</option>
-                <option value="mjpeg">MJPEG/IP camera</option>
-                <option value="device">Device</option>
-                <option value="file">File</option>
-                <option value="sample">Sample video</option>
-                <option value="simulation">Simulation</option>
-              </select>
-            </label>
-            <label>
-              Статус
-              <select
-                value={form.status}
-                onChange={(event) => setForm({ ...form, status: event.target.value as CameraType['status'] })}
-              >
-                <option value="online">Online</option>
-                <option value="offline">Offline</option>
-                <option value="maintenance">Maintenance</option>
-              </select>
-            </label>
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
-              />
-              Включена
-            </label>
-            <button className="primary-button">
-              {selectedCameraId === null ? <Plus size={18} /> : <Wrench size={18} />}
-              <span>{selectedCameraId === null ? 'Добавить' : 'Сохранить источник'}</span>
-            </button>
-          </form>
-        </section>
+          <span className="count-chip">{rooms.length}</span>
+        </div>
+        <div className="room-directory">
+          {rooms.map((room) => {
+            const state = currentByRoom.get(room.id);
+            return (
+              <article className="directory-card" key={room.id}>
+                <div>
+                  <strong>{room.name}</strong>
+                  <span>{room.building}, этаж {room.floor}</span>
+                </div>
+                <b>{state ? `${state.count}/${room.capacity}` : `0/${room.capacity}`}</b>
+                <Progress value={state?.occupancyPercent ?? 0} status={state?.status ?? 'normal'} />
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      {canManage && (
+        <form className="edit-panel" onSubmit={submit}>
+          <span className="eyebrow">Новая аудитория</span>
+          <h2>Добавить помещение</h2>
+          <label>
+            Название
+            <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+          </label>
+          <label>
+            Корпус
+            <input value={form.building} onChange={(event) => setForm({ ...form, building: event.target.value })} required />
+          </label>
+          <label>
+            Этаж
+            <input value={form.floor} onChange={(event) => setForm({ ...form, floor: event.target.value })} required />
+          </label>
+          <label>
+            Вместимость
+            <input value={form.capacity} onChange={(event) => setForm({ ...form, capacity: Number(event.target.value) })} min={1} type="number" required />
+          </label>
+          <button className="primary-button">
+            <Plus size={18} />
+            Добавить
+          </button>
+        </form>
       )}
     </div>
   );
@@ -1135,18 +999,18 @@ function CamerasView({
 
 function MobileView() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('http://localhost:8090');
   const [previewToken, setPreviewToken] = useState('');
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => () => stopLocalCamera(), []);
+  useEffect(() => () => stopCamera(), []);
 
   useEffect(() => {
     let cancelled = false;
-    async function pollPreview() {
+    async function poll() {
       try {
         const response = await fetch(`${normalizePreviewUrl(previewUrl)}/v1/state`, {
           headers: previewToken ? { 'X-Preview-Token': previewToken } : {},
@@ -1166,124 +1030,111 @@ function MobileView() {
         }
       }
     }
-    void pollPreview();
-    const interval = window.setInterval(() => void pollPreview(), 1500);
+    void poll();
+    const interval = window.setInterval(() => void poll(), 1500);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
   }, [previewToken, previewUrl]);
 
-  async function startLocalCamera() {
+  async function startCamera() {
     setError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
-      localStreamRef.current = stream;
+      streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
       setCameraActive(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Браузер не дал доступ к камере');
+      setError(err instanceof Error ? err.message : 'Нет доступа к камере');
     }
   }
 
-  function stopLocalCamera() {
-    localStreamRef.current?.getTracks().forEach((track) => track.stop());
-    localStreamRef.current = null;
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
     setCameraActive(false);
   }
 
-  const streamSrc = `${normalizePreviewUrl(previewUrl)}/v1/stream.mjpg${previewToken ? `?token=${encodeURIComponent(previewToken)}` : ''}`;
+  const streamUrl = `${normalizePreviewUrl(previewUrl)}/v1/stream.mjpg${previewToken ? `?token=${encodeURIComponent(previewToken)}` : ''}`;
 
   return (
-    <div className="mobile-console">
-      <section className="panel mobile-hero-panel">
+    <div className="mobile-workspace">
+      <section className="mobile-intro">
         <div>
-          <span>Mobile companion</span>
-          <h2>Телефон, планшет или ноутбук как часть контура</h2>
-          <p>
-            Для production-сценария телефон подключается как IP/MJPEG/RTSP источник в worker. Эта страница помогает проверить
-            камеру устройства и смотреть live-preview без desktop-клиента.
-          </p>
+          <span className="eyebrow">Mobile companion</span>
+          <h1>Телефон, планшет и preview worker в одном интерфейсе</h1>
+          <p>Страница помогает показать мобильный сценарий без нативного приложения: проверка камеры устройства, просмотр MJPEG preview и инструкция для IP-camera режима.</p>
         </div>
         <Smartphone size={34} />
       </section>
 
-      <section className="mobile-grid">
-        <article className="panel mobile-camera-card">
-          <div className="panel-header">
+      <section className="mobile-panels">
+        <article className="phone-card">
+          <div className="section-heading compact">
             <div>
-              <h2>Камера устройства</h2>
-              <span>Локальная проверка разрешений браузера</span>
+              <span className="eyebrow">Device camera</span>
+              <h2>Проверка камеры</h2>
             </div>
-            <Camera size={20} />
+            <Laptop size={20} />
           </div>
-          <video ref={videoRef} className="device-video" autoPlay playsInline muted />
-          <div className="mobile-actions">
-            <button type="button" className="primary-button" onClick={() => void startLocalCamera()} disabled={cameraActive}>
+          <video ref={videoRef} autoPlay playsInline muted className="device-video" />
+          <div className="button-row">
+            <button className="primary-button" onClick={() => void startCamera()} disabled={cameraActive}>
               <Camera size={18} />
-              <span>Включить</span>
+              Включить
             </button>
-            <button type="button" className="icon-button wide-light" onClick={stopLocalCamera}>
-              <WifiOff size={17} />
-              <span>Остановить</span>
+            <button className="secondary-button" onClick={stopCamera}>
+              <WifiOff size={18} />
+              Стоп
             </button>
           </div>
         </article>
 
-        <article className="panel mobile-preview-card">
-          <div className="panel-header">
+        <article className="preview-card">
+          <div className="section-heading compact">
             <div>
-              <h2>Live preview worker</h2>
-              <span>MJPEG-поток с рамками детекции</span>
+              <span className="eyebrow">Worker preview</span>
+              <h2>Live MJPEG</h2>
             </div>
             <RadioTower size={20} />
           </div>
-          <div className="preview-phone-frame">
-            <img src={streamSrc} alt="AudienceFlow preview stream" />
+          <div className="preview-frame">
+            <img src={streamUrl} alt="AudienceFlow worker preview" />
           </div>
-          <div className="stacked-form">
+          <div className="inline-form">
             <label>
               Preview URL
               <input value={previewUrl} onChange={(event) => setPreviewUrl(event.target.value)} />
             </label>
             <label>
-              Preview token
+              Token
               <input value={previewToken} onChange={(event) => setPreviewToken(event.target.value)} type="password" />
             </label>
           </div>
-          <div className="mobile-stats">
-            <Metric icon={<Users size={18} />} label="Людей" value={previewState?.count ?? '-'} accent="blue" />
-            <Metric
-              icon={<ShieldCheck size={18} />}
-              label="Достоверность"
-              value={previewState ? `${Math.round(previewState.confidence * 100)}%` : '-'}
-              accent="teal"
-            />
-            <Metric icon={<Activity size={18} />} label="FPS" value={previewState?.fps ?? '-'} accent="amber" />
+          <div className="preview-kpis">
+            <MetricCard icon={<Users size={18} />} label="Людей" value={previewState?.count ?? '-'} tone="blue" />
+            <MetricCard icon={<ShieldCheck size={18} />} label="Confidence" value={previewState ? `${Math.round(previewState.confidence * 100)}%` : '-'} tone="green" />
+            <MetricCard icon={<Activity size={18} />} label="FPS" value={previewState?.fps ?? '-'} tone="amber" />
           </div>
         </article>
 
-        <article className="panel mobile-guide">
-          <div className="panel-header">
-            <div>
-              <h2>Как подключить телефон</h2>
-              <span>Без облачных секретов и встроенных паролей</span>
-            </div>
-            <Server size={20} />
-          </div>
+        <article className="guide-card">
+          <span className="eyebrow">Подключение телефона</span>
+          <h2>Production путь без лишнего backend</h2>
           <ol>
-            <li>Подключите телефон и компьютер к одной защищённой сети.</li>
-            <li>Запустите на телефоне IP camera/MJPEG приложение или RTSP-камеру.</li>
-            <li>В разделе камер укажите источник: `phone:http://IP:PORT/video` или `rtsp://IP/live`.</li>
-            <li>Запустите worker с `CAMERA_SOURCE` равным этому URL и detector `hog` или `yolo`.</li>
+            <li>Телефон и сервер в одной защищённой сети.</li>
+            <li>На телефоне включается IP/MJPEG или RTSP camera app.</li>
+            <li>В камерах указывается `phone:http://IP:PORT/video` или `rtsp://IP/live`.</li>
+            <li>Worker запускается с этим `CAMERA_SOURCE`, а счёт уходит в Analytics API.</li>
           </ol>
           {error && <div className="form-error">{error}</div>}
         </article>
@@ -1292,19 +1143,8 @@ function MobileView() {
   );
 }
 
-function UsersView({
-  users,
-  onCreate,
-}: {
-  users: UserView[];
-  onCreate: (payload: CreateUserPayload) => Promise<void>;
-}) {
-  const [form, setForm] = useState<CreateUserPayload>({
-    email: '',
-    displayName: '',
-    role: 'TEACHER',
-    password: '',
-  });
+function AccessView({ users, onCreate }: { users: UserView[]; onCreate: (payload: CreateUserPayload) => Promise<void> }) {
+  const [form, setForm] = useState<CreateUserPayload>({ email: '', displayName: '', role: 'TEACHER', password: '' });
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1313,127 +1153,103 @@ function UsersView({
   }
 
   return (
-    <div className="split-layout">
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Пользователи</h2>
-          <span>{users.length}</span>
+    <div className="access-layout">
+      <section className="access-list">
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow">Доступ</span>
+            <h1>Пользователи и роли</h1>
+          </div>
+          <ShieldCheck size={22} />
         </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Имя</th>
-                <th>Email</th>
-                <th>Роль</th>
-                <th>Статус</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((user) => (
-                <tr key={user.id}>
-                  <td>{user.displayName}</td>
-                  <td>{user.email}</td>
-                  <td>
-                    <RoleBadge role={user.role} compact />
-                  </td>
-                  <td>{user.active ? 'Активен' : 'Отключён'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {users.length === 0 ? (
+          <EmptyState>В презентационном режиме рабочие учётные записи не показываются.</EmptyState>
+        ) : (
+          users.map((user) => (
+            <article className="user-row" key={user.id}>
+              <UserRound size={18} />
+              <div>
+                <strong>{user.displayName}</strong>
+                <span>{user.email}</span>
+              </div>
+              <RoleBadge role={user.role} />
+            </article>
+          ))
+        )}
       </section>
 
-      <section className="panel form-panel">
-        <div className="panel-header">
-          <h2>Новый пользователь</h2>
-          <ShieldCheck size={20} />
-        </div>
-        <form onSubmit={submit} className="stacked-form">
-          <label>
-            Имя
-            <input
-              value={form.displayName}
-              onChange={(event) => setForm({ ...form, displayName: event.target.value })}
-              required
-            />
-          </label>
-          <label>
-            Email
-            <input
-              value={form.email}
-              onChange={(event) => setForm({ ...form, email: event.target.value })}
-              type="email"
-              required
-            />
-          </label>
-          <label>
-            Роль
-            <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
-              <option value="TEACHER">Преподаватель</option>
-              <option value="TECHNICIAN">Техник</option>
-              <option value="ADMIN">Администратор</option>
-            </select>
-          </label>
-          <label>
-            Пароль
-            <div className="inline-control">
-              <input
-                value={form.password}
-                onChange={(event) => setForm({ ...form, password: event.target.value })}
-                minLength={14}
-                autoComplete="new-password"
-                required
-              />
-              <button
-                type="button"
-                className="icon-button"
-                onClick={() => setForm({ ...form, password: generatePassword() })}
-                title="Сгенерировать пароль"
-              >
-                <KeyRound size={17} />
-              </button>
-            </div>
-          </label>
-          <button className="primary-button">
-            <Plus size={18} />
-            <span>Создать</span>
-          </button>
-        </form>
-      </section>
+      <form className="edit-panel" onSubmit={submit}>
+        <span className="eyebrow">Новый пользователь</span>
+        <h2>Создать доступ</h2>
+        <label>
+          Имя
+          <input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} required />
+        </label>
+        <label>
+          Email
+          <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} type="email" required />
+        </label>
+        <label>
+          Роль
+          <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
+            <option value="TEACHER">Преподаватель</option>
+            <option value="TECHNICIAN">Техник</option>
+            <option value="ADMIN">Администратор</option>
+          </select>
+        </label>
+        <label>
+          Пароль
+          <input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength={14} autoComplete="new-password" required />
+        </label>
+        <button className="primary-button">
+          <Plus size={18} />
+          Создать
+        </button>
+      </form>
     </div>
   );
 }
 
-function OccupancyCard({ item }: { item: CurrentAttendance }) {
+function DemoScene({ compact = false }: { compact?: boolean }) {
+  const people = Array.from({ length: compact ? 9 : 16 }, (_, index) => ({
+    id: index + 1,
+    x: 8 + (index % 4) * 23 + (index % 2) * 2,
+    y: 16 + Math.floor(index / 4) * 18 + (index % 3) * 2,
+  }));
+
   return (
-    <article className={`occupancy-card ${item.status}`}>
-      <div className="room-card-header">
-        <div>
-          <strong>{item.roomName}</strong>
-          <span>
-            {item.building}, этаж {item.floor}
+    <div className={compact ? 'demo-scene compact' : 'demo-scene'}>
+      <div className="scene-toolbar">
+        <span>Camera A-305</span>
+        <b>LIVE</b>
+      </div>
+      <div className="scene-grid">
+        {people.map((person) => (
+          <span key={person.id} className="person-dot" style={{ left: `${person.x}%`, top: `${person.y}%` }}>
+            <i />
           </span>
-        </div>
-        <span className="percent">{item.occupancyPercent}%</span>
+        ))}
       </div>
-      <div className="progress-track">
-        <div className="progress-fill" style={{ width: `${Math.min(100, item.occupancyPercent)}%` }} />
+      <div className="scene-overlay">
+        <strong>{compact ? 18 : 42}</strong>
+        <span>people detected</span>
       </div>
-      <div className="room-card-footer">
-        <span>
-          {item.count} / {item.capacity}
-        </span>
-        <span>conf {Math.round(item.confidence * 100)}%</span>
-      </div>
-    </article>
+    </div>
   );
 }
 
-function Metric({ icon, label, value, accent }: { icon: ReactNode; label: string; value: ReactNode; accent: string }) {
+function NavButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
   return (
-    <article className={`metric ${accent}`}>
+    <button className={active ? 'nav-button active' : 'nav-button'} onClick={onClick}>
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function MetricCard({ icon, label, value, tone }: { icon: ReactNode; label: string; value: ReactNode; tone: string }) {
+  return (
+    <article className={`metric-card ${tone}`}>
       <div className="metric-icon">{icon}</div>
       <div>
         <span>{label}</span>
@@ -1443,11 +1259,17 @@ function Metric({ icon, label, value, accent }: { icon: ReactNode; label: string
   );
 }
 
-function RoleBadge({ role, compact = false }: { role: Role; compact?: boolean }) {
+function StatusPill({ state }: { state: LiveState }) {
+  const labels: Record<LiveState, string> = {
+    live: 'Live WebSocket',
+    polling: 'Polling',
+    presentation: 'Demo live',
+    offline: 'Нет сигнала',
+  };
   return (
-    <span className={`role-badge ${role.toLowerCase()} ${compact ? 'compact' : ''}`}>
-      <ShieldCheck size={compact ? 14 : 16} />
-      {roleLabels[role]}
+    <span className={`status-pill ${state}`}>
+      <RadioTower size={15} />
+      {labels[state]}
     </span>
   );
 }
@@ -1461,101 +1283,72 @@ function StatusBadge({ status }: { status: CameraType['status'] }) {
   return <span className={`status-badge ${status}`}>{labels[status]}</span>;
 }
 
-function LiveBadge({ state }: { state: LiveState }) {
-  const labels: Record<LiveState, string> = {
-    live: 'Live WebSocket',
-    polling: 'Polling',
-    presentation: 'Презентация',
-    offline: 'Нет сигнала',
-  };
+function RoleBadge({ role }: { role: Role }) {
   return (
-    <span className={`live-badge ${state}`}>
-      <RadioTower size={16} />
-      {labels[state]}
+    <span className={`role-badge ${role.toLowerCase()}`}>
+      <ShieldCheck size={14} />
+      {roleLabels[role]}
     </span>
   );
 }
 
-interface DashboardStats {
-  rooms: number;
-  averageOccupancy: number;
-  totalPeople: number;
-  onlineCameras: number;
+function Progress({ value, status }: { value: number; status: CurrentAttendance['status'] }) {
+  return (
+    <div className="progress-track">
+      <span className={`progress-fill ${status}`} style={{ width: `${Math.max(3, Math.min(100, value))}%` }} />
+    </div>
+  );
+}
+
+function EmptyState({ children }: { children: ReactNode }) {
+  return (
+    <div className="empty-state">
+      <Eye size={18} />
+      <span>{children}</span>
+    </div>
+  );
 }
 
 function buildStats(current: CurrentAttendance[], cameras: CameraType[]): DashboardStats {
   const averageOccupancy =
-    current.length === 0
-      ? 0
-      : Math.round(current.reduce((sum, item) => sum + item.occupancyPercent, 0) / current.length);
+    current.length === 0 ? 0 : Math.round(current.reduce((sum, item) => sum + item.occupancyPercent, 0) / current.length);
   return {
     rooms: current.length,
-    averageOccupancy,
     totalPeople: current.reduce((sum, item) => sum + item.count, 0),
+    averageOccupancy,
+    attentionRooms: current.filter((item) => item.status !== 'normal').length,
     onlineCameras: cameras.filter((camera) => camera.status === 'online').length,
   };
 }
 
-function statusLabel(status: CurrentAttendance['status']): string {
-  const labels: Record<CurrentAttendance['status'], string> = {
-    normal: 'норма',
-    warning: 'высокая',
-    full: 'критично',
-  };
-  return labels[status];
+function buildTelemetry(items: CurrentAttendance[], receivedAt: Date, previous: TelemetryEvent[]): TelemetryEvent[] {
+  if (items.length === 0) {
+    return previous;
+  }
+  const sorted = [...items].sort((left, right) => right.occupancyPercent - left.occupancyPercent);
+  const source = sorted.filter((item) => item.status !== 'normal').slice(0, 3);
+  const selected = source.length > 0 ? source : sorted.slice(0, 2);
+  const next = selected.map((item) => ({
+    id: `${receivedAt.getTime()}-${item.roomId}`,
+    ts: receivedAt,
+    title: item.status === 'full' ? 'Критическая загрузка' : item.status === 'warning' ? 'Высокая загрузка' : 'Новый снимок',
+    detail: `${item.roomName}: ${item.count}/${item.capacity}, ${item.occupancyPercent}%`,
+    status: item.status === 'normal' ? ('info' as const) : item.status,
+  }));
+  return [...next, ...previous].slice(0, 32);
 }
 
 function streamLabel(streamType: CameraType['streamType']): string {
   const labels: Record<CameraType['streamType'], string> = {
-    rtsp: 'RTSP-поток',
-    http: 'HTTP-поток',
-    mjpeg: 'MJPEG/IP camera',
-    device: 'камера устройства',
-    file: 'видеофайл',
-    sample: 'sample video',
-    simulation: 'симулятор',
+    rtsp: 'RTSP',
+    http: 'HTTP',
+    mjpeg: 'MJPEG/IP',
+    device: 'Device',
+    file: 'File',
+    sample: 'Sample video',
+    simulation: 'Simulation fallback',
   };
   return labels[streamType];
-}
-
-function buildTelemetryEvents(
-  items: CurrentAttendance[],
-  receivedAt: Date,
-  previous: TelemetryEvent[],
-): TelemetryEvent[] {
-  if (items.length === 0) {
-    return previous;
-  }
-
-  const sorted = [...items].sort((left, right) => right.occupancyPercent - left.occupancyPercent);
-  const important = sorted.filter((item) => item.status !== 'normal').slice(0, 3);
-  const source = important.length > 0 ? important : sorted.slice(0, 2);
-  const next = source.map((item) => ({
-    id: `${receivedAt.getTime()}-${item.roomId}`,
-    ts: receivedAt,
-    title: item.status === 'full' ? 'Критическая загрузка' : item.status === 'warning' ? 'Высокая загрузка' : 'Обновление',
-    detail: `${item.roomName}: ${item.count}/${item.capacity}, ${item.occupancyPercent}%`,
-    status: item.status === 'normal' ? 'info' as const : item.status,
-  }));
-
-  return [...next, ...previous].slice(0, 36);
-}
-
-function viewTitle(view: View): string {
-  switch (view) {
-    case 'monitoring':
-      return 'Центр мониторинга';
-    case 'rooms':
-      return 'Аудиторный фонд';
-    case 'cameras':
-      return 'Камеры';
-    case 'mobile':
-      return 'Mobile companion';
-    case 'users':
-      return 'Доступ';
-    default:
-      return 'Аналитика';
-  }
 }
 
 function formatTime(value: string): string {
@@ -1564,45 +1357,4 @@ function formatTime(value: string): string {
 
 function formatClock(value: Date): string {
   return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(value);
-}
-
-function normalizePreviewUrl(value: string): string {
-  const trimmed = value.trim();
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-  return withScheme.replace(/\/$/, '');
-}
-
-function restoreSession(): AuthSession | null {
-  localStorage.removeItem(sessionStorageKey);
-  const raw = window.sessionStorage.getItem(sessionStorageKey);
-  if (!raw) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw) as AuthSession;
-    if (!parsed.token || !parsed.user || (!parsed.demo && !parsed.apiUrl)) {
-      window.sessionStorage.removeItem(sessionStorageKey);
-      return null;
-    }
-    return parsed.demo ? { ...parsed, apiUrl: null } : parsed;
-  } catch {
-    window.sessionStorage.removeItem(sessionStorageKey);
-    return null;
-  }
-}
-
-function generatePassword(): string {
-  const groups = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%'];
-  const alphabet = groups.join('');
-  const values = new Uint32Array(24);
-  crypto.getRandomValues(values);
-  const chars = groups.map((group, index) => group[values[index] % group.length]);
-  for (let index = groups.length; index < values.length; index += 1) {
-    chars.push(alphabet[values[index] % alphabet.length]);
-  }
-  return chars
-    .map((char, index) => ({ char, rank: values[index] }))
-    .sort((left, right) => left.rank - right.rank)
-    .map((item) => item.char)
-    .join('');
 }
