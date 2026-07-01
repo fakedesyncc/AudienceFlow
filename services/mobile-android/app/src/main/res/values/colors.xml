@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="af_background">#F7F8F6</color>
+    <color name="af_surface">#FFFFFF</color>
+    <color name="af_text">#171717</color>
+    <color name="af_muted">#667085</color>
+    <color name="af_primary">#D72D0B</color>
+    <color name="af_primary_dark">#A81E09</color>
+    <color name="af_success">#107569</color>
+</resources>

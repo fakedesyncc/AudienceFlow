@@ -19,6 +19,11 @@ services/web/dist/
 target/
 *.class
 
+# Gradle / Android
+**/.gradle/
+**/build/
+local.properties
+
 # Python
 __pycache__/
 *.py[cod]

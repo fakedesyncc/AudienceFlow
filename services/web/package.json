@@ -1,13 +1,14 @@
 {
   "name": "@audienceflow/web",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "lint": "tsc -b --pretty false"
+    "lint": "tsc -b --pretty false",
+    "test": "vitest run"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.4.1",
@@ -20,6 +21,7 @@
   },
   "devDependencies": {
     "@types/react": "^19.1.4",
-    "@types/react-dom": "^19.1.5"
+    "@types/react-dom": "^19.1.5",
+    "vitest": "^3.0.0"
   }
 }

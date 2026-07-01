@@ -1,5 +1,5 @@
-const CACHE_NAME = "audienceflow-shell-v1";
-const SHELL_ASSETS = ["./", "./manifest.webmanifest", "./audienceflow-icon.svg"];
+const CACHE_NAME = "aula-shell-v1";
+const SHELL_ASSETS = ["./", "./manifest.webmanifest", "./favicon.svg", "./brand/aula-icon-192.png"];
 const API_MARKERS = ["/api/", "/auth/", "/attendance/", "/cameras/", "/admin/", "/ws/"];
 
 self.addEventListener("install", (event) => {

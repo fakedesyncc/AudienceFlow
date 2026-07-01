@@ -1,4 +1,6 @@
-# Работа с репозиторием
+# Вклад в AULA
+
+Спасибо за вклад в **AULA** (платформа *AudienceFlow*). Продукт — AULA; технические имена (Java-пакеты `io.audienceflow`, module path, репозиторий, GitHub Pages URL, каталоги) не меняются. Весь UI-текст и документация — на русском. Визуальные правки должны соответствовать [docs/design-system.md](docs/design-system.md).
 
 ## Ветки
 

@@ -13,11 +13,21 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	// flushBackoffBase is the initial delay between failed flush retries.
+	flushBackoffBase = 200 * time.Millisecond
+	// flushBackoffCap bounds the exponential backoff between failed flushes.
+	flushBackoffCap = 5 * time.Second
+	// shutdownDrainTimeout bounds the final drain flush during shutdown.
+	shutdownDrainTimeout = 8 * time.Second
 )
 
 type config struct {
@@ -27,6 +37,8 @@ type config struct {
 	BatchSize     int
 	FlushInterval time.Duration
 	QueueSize     int
+	MaxBuffer     int
+	MaxEventAge   time.Duration
 }
 
 type attendanceEvent struct {
@@ -42,6 +54,11 @@ type gateway struct {
 	db     *pgxpool.Pool
 	events chan attendanceEvent
 	logger *slog.Logger
+	// writeBatchFn persists a batch. It defaults to (*gateway).writeBatch but
+	// is overridable in tests so the batch writer can be exercised without a DB.
+	writeBatchFn func(ctx context.Context, events []attendanceEvent) error
+	// now returns the current time; overridable in tests.
+	now func() time.Time
 }
 
 func main() {
@@ -73,8 +90,15 @@ func main() {
 		events: make(chan attendanceEvent, cfg.QueueSize),
 		logger: logger,
 	}
+	g.writeBatchFn = g.writeBatch
+	g.now = time.Now
 
-	go g.batchWriter(ctx)
+	var writerWG sync.WaitGroup
+	writerWG.Add(1)
+	go func() {
+		defer writerWG.Done()
+		g.batchWriter()
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", g.health)
@@ -100,9 +124,14 @@ func main() {
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// Fully quiesce HTTP handlers first so no producer can enqueue events after
+	// the events channel is closed, then close the channel and wait for the
+	// batch writer to finish its final drain.
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("http shutdown failed", "error", err)
 	}
+	close(g.events)
+	writerWG.Wait()
 }
 
 func loadConfig() (config, error) {
@@ -113,6 +142,12 @@ func loadConfig() (config, error) {
 		BatchSize:     getenvInt("BATCH_SIZE", 64),
 		FlushInterval: getenvDuration("FLUSH_INTERVAL", time.Second),
 		QueueSize:     getenvInt("QUEUE_SIZE", 2048),
+		MaxBuffer:     getenvInt("MAX_BUFFER", 0),
+		MaxEventAge:   getenvDuration("MAX_EVENT_AGE", 24*time.Hour),
+	}
+
+	if cfg.MaxBuffer <= 0 {
+		cfg.MaxBuffer = defaultMaxBuffer(cfg.BatchSize)
 	}
 
 	switch {
@@ -124,9 +159,21 @@ func loadConfig() (config, error) {
 		return cfg, errors.New("BATCH_SIZE must be positive")
 	case cfg.QueueSize < cfg.BatchSize:
 		return cfg, errors.New("QUEUE_SIZE must be greater than or equal to BATCH_SIZE")
+	case cfg.MaxBuffer < cfg.BatchSize:
+		return cfg, errors.New("MAX_BUFFER must be greater than or equal to BATCH_SIZE")
+	case cfg.MaxEventAge <= 0:
+		return cfg, errors.New("MAX_EVENT_AGE must be positive")
 	}
 
 	return cfg, nil
+}
+
+// defaultMaxBuffer bounds the in-memory retry buffer to max(BatchSize*20, 1000).
+func defaultMaxBuffer(batchSize int) int {
+	if buf := batchSize * 20; buf > 1000 {
+		return buf
+	}
+	return 1000
 }
 
 func (g *gateway) health(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +215,7 @@ func (g *gateway) ingestEvent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only one event per request is allowed"})
 		return
 	}
-	if err := event.Validate(); err != nil {
+	if err := event.Validate(g.now(), g.cfg.MaxEventAge); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -192,14 +239,16 @@ func (g *gateway) authorized(header string) bool {
 	return subtle.ConstantTimeCompare([]byte(header), []byte(g.cfg.IngestAPIKey)) == 1
 }
 
-func (e attendanceEvent) Validate() error {
+func (e attendanceEvent) Validate(now time.Time, maxAge time.Duration) error {
 	switch {
 	case e.RoomID < 1:
 		return errors.New("room_id must be positive")
 	case e.Timestamp.IsZero():
 		return errors.New("ts is required")
-	case e.Timestamp.After(time.Now().Add(5 * time.Minute)):
+	case e.Timestamp.After(now.Add(5 * time.Minute)):
 		return errors.New("ts cannot be more than five minutes in the future")
+	case maxAge > 0 && e.Timestamp.Before(now.Add(-maxAge)):
+		return errors.New("ts is too far in the past")
 	case e.Count < 0:
 		return errors.New("count must be non-negative")
 	case e.Confidence < 0 || e.Confidence > 1:
@@ -213,36 +262,36 @@ func (e attendanceEvent) Validate() error {
 	}
 }
 
-func (g *gateway) batchWriter(ctx context.Context) {
+// batchWriter consumes events until the events channel is closed, batching
+// them and flushing to the database. On a failed flush the batch is retained
+// (not dropped) and retried on the next flush; only a successful write clears
+// it. It returns after draining and flushing all remaining events once the
+// channel is closed.
+func (g *gateway) batchWriter() {
 	ticker := time.NewTicker(g.cfg.FlushInterval)
 	defer ticker.Stop()
 
+	// batch holds events accepted but not yet durably written. It persists
+	// across flush failures so accepted attendance is never dropped on a
+	// transient DB error.
 	batch := make([]attendanceEvent, 0, g.cfg.BatchSize)
+	backoff := flushBackoffBase
+
+	// flush attempts to persist the current batch. On success it clears the
+	// batch and resets backoff. On failure it retains the batch, enforces the
+	// bounded buffer by dropping the oldest overflow, and grows the backoff.
 	flush := func() {
-		if len(batch) == 0 {
-			return
-		}
-		if err := g.writeBatch(context.Background(), batch); err != nil {
-			g.logger.Error("write attendance batch", "events", len(batch), "error", err)
-		} else {
-			g.logger.Info("attendance batch written", "events", len(batch))
-		}
-		batch = batch[:0]
+		batch = g.attemptFlush(batch, &backoff)
 	}
 
 	for {
 		select {
-		case <-ctx.Done():
-			for {
-				select {
-				case event := <-g.events:
-					batch = append(batch, event)
-				default:
-					flush()
-					return
-				}
+		case event, ok := <-g.events:
+			if !ok {
+				// Channel closed: perform the final bounded drain flush.
+				g.drainFlush(batch)
+				return
 			}
-		case event := <-g.events:
 			batch = append(batch, event)
 			if len(batch) >= g.cfg.BatchSize {
 				flush()
@@ -251,6 +300,82 @@ func (g *gateway) batchWriter(ctx context.Context) {
 			flush()
 		}
 	}
+}
+
+// attemptFlush writes the batch once. On success it returns an empty slice and
+// resets backoff. On failure it returns the retained (bounded) batch and applies
+// a capped exponential backoff sleep so a DB outage does not spin.
+func (g *gateway) attemptFlush(batch []attendanceEvent, backoff *time.Duration) []attendanceEvent {
+	if len(batch) == 0 {
+		return batch
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := g.writeBatchFn(ctx, batch)
+	cancel()
+	if err == nil {
+		g.logger.Info("attendance batch written", "events", len(batch))
+		*backoff = flushBackoffBase
+		return batch[:0]
+	}
+
+	g.logger.Error("write attendance batch", "events", len(batch), "error", err)
+	batch = g.enforceBuffer(batch)
+
+	// Capped exponential backoff between failed flushes.
+	time.Sleep(*backoff)
+	if next := *backoff * 2; next < flushBackoffCap {
+		*backoff = next
+	} else {
+		*backoff = flushBackoffCap
+	}
+	return batch
+}
+
+// enforceBuffer bounds the retained batch to cfg.MaxBuffer, dropping the oldest
+// overflow (and logging a warning) to avoid unbounded memory growth.
+func (g *gateway) enforceBuffer(batch []attendanceEvent) []attendanceEvent {
+	if g.cfg.MaxBuffer <= 0 || len(batch) <= g.cfg.MaxBuffer {
+		return batch
+	}
+	overflow := len(batch) - g.cfg.MaxBuffer
+	g.logger.Warn("attendance buffer overflow, dropping oldest", "count", overflow)
+	// Drop the oldest events, keeping the most recent MaxBuffer.
+	return append(batch[:0], batch[overflow:]...)
+}
+
+// drainFlush performs the final shutdown flush with a bounded deadline. It
+// retries on failure until the deadline; if it still cannot persist the batch
+// it logs at error level with the count rather than silently dropping data.
+func (g *gateway) drainFlush(batch []attendanceEvent) {
+	if len(batch) == 0 {
+		return
+	}
+	deadline := g.now().Add(shutdownDrainTimeout)
+	backoff := flushBackoffBase
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), remaining)
+		err := g.writeBatchFn(ctx, batch)
+		cancel()
+		if err == nil {
+			g.logger.Info("attendance batch written", "events", len(batch))
+			return
+		}
+		g.logger.Error("drain flush failed, retrying", "events", len(batch), "error", err)
+		if time.Until(deadline) <= backoff {
+			break
+		}
+		time.Sleep(backoff)
+		if next := backoff * 2; next < flushBackoffCap {
+			backoff = next
+		} else {
+			backoff = flushBackoffCap
+		}
+	}
+	g.logger.Error("attendance events lost on shutdown drain", "events", len(batch))
 }
 
 func (g *gateway) writeBatch(ctx context.Context, events []attendanceEvent) error {
