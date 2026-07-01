@@ -1,55 +1,144 @@
 # AudienceFlow
 
-Distributed attendance-counting system for production practice.
+![CI](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/ci.yml/badge.svg)
+![GitHub Pages](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/deploy-pages.yml/badge.svg)
 
-AudienceFlow combines a Python camera worker, Go ingest gateway, Java Analytics API, PostgreSQL, and a TypeScript/React dashboard. The system supports role-based access for teachers, technicians, and administrators, generated local credentials, camera management, live occupancy, and 5-minute attendance aggregates.
+AudienceFlow — распределённая система подсчёта посещаемости для аудиторий, лабораторий и учебных залов. Проект сделан как практическая инженерная работа: несколько сервисов, понятные границы ответственности, контейнерный запуск, роли пользователей и статический деплой dashboard на GitHub Pages.
 
-## Quick start
+Сайт: https://fakedesyncc.github.io/AudienceFlow/
+
+## Что умеет
+
+- принимает события от камер и worker-ов через защищённый ingest endpoint;
+- хранит измерения посещаемости в PostgreSQL;
+- считает текущую загрузку, пики и 5-минутные агрегаты;
+- показывает dashboard для преподавателей, техников и администраторов;
+- позволяет техникам и админам подключать камеры через панель;
+- выдаёт JWT после логина и не хранит рабочие пароли в репозитории;
+- запускается локально через Docker Compose;
+- автоматически проверяется через GitHub Actions.
+
+## Роли
+
+| Роль | Что видит | Что может делать |
+| --- | --- | --- |
+| Преподаватель | Заполненность аудиторий, графики, статусы камер без URL потоков | Смотреть текущую ситуацию и историю |
+| Техник | Аудитории, камеры, источники потоков, статусы | Добавлять аудитории и камеры, готовить подключение RTSP/HTTP/device |
+| Администратор | Всё, включая пользователей | Управлять пользователями, ролями и инфраструктурой |
+
+## Архитектура
+
+```mermaid
+flowchart LR
+    Camera["Камера устройства / телефон / RTSP / симулятор"] --> Worker["Python vision-worker"]
+    Worker -->|"HTTP JSON + X-Ingest-Key"| Gateway["Go ingest-gateway"]
+    Gateway -->|"batched inserts"| DB[(PostgreSQL)]
+    DB --> API["Java Spring Analytics API"]
+    API -->|"REST + WebSocket"| Web["React dashboard"]
+```
+
+Полиглотный стек выбран по назначению, а не ради таблицы в отчёте:
+
+- Python — компьютерное зрение и интеграция с OpenCV/YOLO.
+- Go — быстрый приём событий от worker-ов, backpressure и батчинг.
+- Java/Spring Boot — бизнес-логика, безопасность, роли, REST и live-канал.
+- TypeScript/React — dashboard, формы, графики и GitHub Pages.
+- PostgreSQL — временные ряды, индексы и агрегаты.
+
+Подробнее: [docs/architecture.md](docs/architecture.md).
+
+## Быстрый запуск
+
+Сгенерировать локальные секреты и стартовые учётные записи:
 
 ```bash
 ./scripts/bootstrap-env.sh
+```
+
+Запустить систему:
+
+```bash
 docker compose up --build
 ```
 
-Open http://localhost:3000 and sign in with the generated credentials printed by the bootstrap script.
+Открыть:
 
-To run a simulated camera worker:
+- dashboard: http://localhost:3000
+- Analytics API: http://localhost:8080/api/health
+- ingest gateway: http://localhost:8081/healthz
+
+Проверить приём события:
+
+```bash
+make smoke
+```
+
+## Камера
+
+Симулятор для демонстрации:
 
 ```bash
 docker compose --profile worker up --build vision-worker
 ```
 
-Useful shortcuts:
+Камера ноутбука или подключённого устройства:
 
 ```bash
-make test
-make smoke
+cd services/vision-worker
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
 ```
 
-`make smoke` posts a sample attendance event to the Go gateway. Run it after the stack is up.
+Телефон обычно подключается через IP-camera приложение. Если приложение отдаёт RTSP или HTTP MJPEG, URL можно передать в `CAMERA_SOURCE` или добавить через раздел камер в dashboard.
 
-## Services
+YOLO включается отдельно:
 
-| Service | Language | Purpose |
-| --- | --- | --- |
-| `services/vision-worker` | Python | Reads a device/RTSP/HTTP camera, detects people, stabilizes count, sends events. |
-| `services/ingest-gateway` | Go | Accepts worker events, validates ingest key, applies backpressure, writes PostgreSQL batches. |
-| `services/analytics-api` | Java / Spring Boot | Authentication, roles, rooms, cameras, aggregates, live WebSocket data. |
-| `services/web` | TypeScript / React | Role-specific dashboard for teachers, technicians, and admins. |
-| `infra/postgres` | SQL | Schema, indexes, sample rooms, aggregate view. |
+```bash
+pip install -r requirements-yolo.txt
+DETECTOR=yolo YOLO_MODEL=yolov8n.pt python -m app.main
+```
 
-## Security defaults
+## Команды
 
-The repository does not contain working credentials. Run `./scripts/bootstrap-env.sh` to generate:
+```bash
+make test      # Go, Java, Python syntax, React production build
+make up        # docker compose up --build
+make worker    # simulated worker profile
+make smoke     # ручное событие в ingest gateway
+make down      # остановить compose stack
+```
 
-- PostgreSQL password
-- ingest API key
-- JWT signing secret
-- initial admin, technician, and teacher passwords
+## Безопасность
 
-The default `admin/admin` pattern is not used anywhere.
+В репозитории нет рабочих паролей. Скрипт `scripts/bootstrap-env.sh` генерирует:
 
-## Documentation
+- пароль PostgreSQL;
+- ingest API key для worker-ов;
+- JWT secret;
+- стартовые пароли для администратора, техника и преподавателя.
 
-- [Architecture](docs/architecture.md)
-- [Deployment](docs/deployment.md)
+Шаблон `admin/admin` не используется. Если `.env` уже существует, скрипт не перезаписывает его без `FORCE=1`.
+
+## Деплой
+
+GitHub Pages публикует только статический dashboard. Backend остаётся контейнерным и запускается отдельно: локально, на VPS, на университетском сервере или в облаке.
+
+Если `VITE_API_URL` не задан в настройках репозитория, dashboard на GitHub Pages работает в demo mode. Для подключения реального backend нужно добавить repository variable:
+
+```text
+VITE_API_URL=https://your-api.example.com/api
+```
+
+Runbook: [docs/deployment.md](docs/deployment.md).
+
+## Ветки и коммиты
+
+`main` — deployable branch. Новая работа должна идти через ветки `feat/*`, `fix/*`, `docs/*` и PR. Первый bootstrap был отправлен напрямую в `main`, потому что репозиторий был пустой и нужно было поднять Pages. Дальше используется обычный branch workflow.
+
+Правила: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Для защиты
+
+Короткий сценарий демонстрации, сильные стороны архитектуры и честные ограничения MVP описаны здесь: [docs/practice-defense.md](docs/practice-defense.md).

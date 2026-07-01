@@ -1,20 +1,85 @@
-# AudienceFlow Architecture
+# Архитектура AudienceFlow
 
-AudienceFlow is a distributed attendance-counting system built as a practice-ready polyglot project:
+AudienceFlow считает посещаемость не «внутри одного большого приложения», а через цепочку небольших сервисов. Так проще объяснять систему на защите и проще менять отдельные части: камеру, способ детекции, API или frontend.
 
-- Python vision worker reads a camera, stabilizes a person count, and sends attendance events.
-- Go ingest gateway validates worker events and writes them to PostgreSQL with bounded backpressure.
-- Java Spring Boot Analytics API owns authentication, role-based access, room/camera administration, aggregates, and live updates.
-- React/TypeScript dashboard provides role-specific views for teachers, technicians, and administrators.
-- PostgreSQL stores rooms, cameras, users, raw attendance events, audit records, and 5-minute aggregate views.
+## Сервисы
+
+| Сервис | Язык | Ответственность |
+| --- | --- | --- |
+| `vision-worker` | Python | Получает кадры, считает людей, стабилизирует значение, отправляет событие |
+| `ingest-gateway` | Go | Принимает события от worker-ов, проверяет ingest key, держит очередь, пишет батчами |
+| `analytics-api` | Java / Spring Boot | Авторизация, роли, аудитории, камеры, пользователи, агрегаты, live WebSocket |
+| `web` | TypeScript / React | Dashboard для преподавателей, техников и администраторов |
+| `postgres` | PostgreSQL | Хранение комнат, камер, пользователей, измерений и агрегатов |
+
+## Поток данных
 
 ```mermaid
-flowchart LR
-    Camera["Device camera / phone RTSP / simulation"] --> Worker["Python vision-worker"]
-    Worker -->|HTTP JSON + X-Ingest-Key| Gateway["Go ingest-gateway"]
-    Gateway -->|batched inserts| Postgres[(PostgreSQL)]
-    Postgres --> Api["Java Analytics API"]
-    Api -->|REST + WebSocket| Web["React Dashboard"]
+sequenceDiagram
+    participant C as Камера
+    participant W as Python worker
+    participant G as Go gateway
+    participant P as PostgreSQL
+    participant A as Java API
+    participant D as Dashboard
+
+    C->>W: кадры
+    W->>W: detector + sliding median
+    W->>G: AttendanceEvent
+    G->>G: validation + queue
+    G->>P: batch insert
+    D->>A: REST запросы
+    A->>P: SQL агрегаты
+    A-->>D: JSON
+    A-->>D: WebSocket live snapshot
 ```
 
-The repository also contains a protobuf contract for a future gRPC transport. The MVP uses HTTP JSON because it is faster to operate and easier to demonstrate during practice defense.
+Событие worker-а:
+
+```json
+{
+  "room_id": 1,
+  "ts": "2026-07-01T10:32:15Z",
+  "count": 47,
+  "confidence": 0.83,
+  "worker_id": "cam-aud-305"
+}
+```
+
+## Почему так
+
+Python остаётся рядом с OpenCV и YOLO. Go принимает много коротких I/O-запросов и не держит тяжёлой бизнес-логики. Java API отвечает за правила доступа и агрегаты, потому что это стабильный слой приложения. React отделён от backend и может быть опубликован как статический сайт.
+
+Такой разрез делает проект удобным для практики: каждый сервис можно показать отдельно, но вместе они дают цельный поток «камера → событие → база → аналитика → dashboard».
+
+## База данных
+
+Основные таблицы:
+
+- `rooms` — аудитории и вместимость;
+- `cameras` — источники камер и их статус;
+- `app_users` — пользователи и роли;
+- `attendance` — сырые измерения;
+- `audit_log` — место для последующего аудита действий;
+- `attendance_5min` — view с 5-минутными агрегатами.
+
+PostgreSQL выбран из-за нормальной работы со временем, индексов и оконных/агрегатных запросов. Если на стенде PostgreSQL не получится поднять, ближайший практичный fallback — перейти на SQLite для одиночного demo-режима или на MySQL/MariaDB для контейнерного режима. В таком случае придётся адаптировать SQL-тип `TIMESTAMPTZ`, view и driver-ы в Go/Java.
+
+## Live-обновления
+
+`analytics-api` отдаёт текущую картину через REST endpoint и WebSocket:
+
+- REST нужен для первичной загрузки и fallback polling;
+- WebSocket нужен для живого dashboard без постоянных ручных обновлений.
+
+WebSocket принимает JWT в query-параметре. Это не идеальная схема для публичного production, но для учебного MVP она проста и понятна. Для промышленного режима лучше перейти на короткоживущие socket tokens или cookie-based auth.
+
+## Границы MVP
+
+Проект уже работает как демонстрационный distributed MVP. Что стоит делать дальше:
+
+- добавить полноценный трекинг входа/выхода через виртуальную линию;
+- вынести миграции в Flyway или Liquibase;
+- добавить audit events для действий администратора;
+- прикрутить refresh tokens;
+- вынести backend на публичный хостинг и подключить Pages dashboard к реальному API.
