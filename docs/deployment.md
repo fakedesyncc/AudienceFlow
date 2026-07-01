@@ -30,13 +30,15 @@
 
 ## Что создаёт bootstrap
 
-`scripts/bootstrap-env.sh` создаёт `.env` и печатает стартовые логины:
+`scripts/bootstrap-env.sh` создаёт `.env` и печатает случайные стартовые данные:
 
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`;
 - `TECHNICIAN_EMAIL` / `TECHNICIAN_PASSWORD`;
 - `TEACHER_EMAIL` / `TEACHER_PASSWORD`.
 
 Также генерируются `POSTGRES_PASSWORD`, `INGEST_API_KEY` и `JWT_SECRET`. Файл `.env` добавлен в `.gitignore`.
+
+Эти email и пароли не лежат в репозитории. Их видит только человек, который запустил bootstrap-скрипт.
 
 ## Worker
 
@@ -59,7 +61,7 @@ CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/even
 RTSP/HTTP камера:
 
 ```bash
-CAMERA_SOURCE=rtsp://example.local:8554/live DETECTOR=hog python -m app.main
+CAMERA_SOURCE=rtsp://your-camera-host:8554/live DETECTOR=hog python -m app.main
 ```
 
 ## GitHub Pages
@@ -87,15 +89,23 @@ gh api -X POST repos/fakedesyncc/AudienceFlow/pages -f build_type=workflow
 
 ## Подключение реального API к Pages
 
-По умолчанию Pages dashboard работает в demo mode. Это нужно потому, что GitHub Pages не запускает backend.
+По умолчанию Pages dashboard открывает презентационный мониторинг без логинов и паролей. Это нужно потому, что GitHub Pages не запускает backend.
 
-Чтобы dashboard ходил в публичный API, добавь repository variable:
+Чтобы dashboard ходил в публичный API, можно прямо на экране входа выбрать `API` и ввести:
+
+- API URL;
+- email пользователя;
+- пароль пользователя.
+
+Repository variable можно добавить только для удобства, чтобы API URL был предзаполнен:
 
 ```text
 VITE_API_URL=https://your-api.example.com/api
 ```
 
 После изменения переменной перезапусти `Deploy GitHub Pages`.
+
+JWT хранится в `sessionStorage` браузера. Пароль не сохраняется в приложении.
 
 ## Где держать backend
 

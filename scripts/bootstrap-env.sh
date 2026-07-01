@@ -17,9 +17,17 @@ random_password() {
   openssl rand -base64 18 | tr -d '+/=' | cut -c1-22
 }
 
+random_local_email() {
+  local prefix="$1"
+  printf "audienceflow-%s-%s@example.invalid" "${prefix}" "$(openssl rand -hex 4)"
+}
+
 POSTGRES_PASSWORD="$(random_secret)"
 INGEST_API_KEY="$(random_secret)"
 JWT_SECRET="$(random_secret)$(random_secret)"
+ADMIN_EMAIL="$(random_local_email admin)"
+TECHNICIAN_EMAIL="$(random_local_email tech)"
+TEACHER_EMAIL="$(random_local_email teacher)"
 ADMIN_PASSWORD="$(random_password)"
 TECHNICIAN_PASSWORD="$(random_password)"
 TEACHER_PASSWORD="$(random_password)"
@@ -32,11 +40,11 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 INGEST_API_KEY=${INGEST_API_KEY}
 JWT_SECRET=${JWT_SECRET}
 
-ADMIN_EMAIL=audienceflow-admin@example.local
+ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
-TECHNICIAN_EMAIL=audienceflow-tech@example.local
+TECHNICIAN_EMAIL=${TECHNICIAN_EMAIL}
 TECHNICIAN_PASSWORD=${TECHNICIAN_PASSWORD}
-TEACHER_EMAIL=audienceflow-teacher@example.local
+TEACHER_EMAIL=${TEACHER_EMAIL}
 TEACHER_PASSWORD=${TEACHER_PASSWORD}
 
 CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
@@ -49,9 +57,9 @@ cat <<EOF
 Generated ${ENV_FILE}
 
 Initial credentials:
-  ADMIN       audienceflow-admin@example.local / ${ADMIN_PASSWORD}
-  TECHNICIAN  audienceflow-tech@example.local / ${TECHNICIAN_PASSWORD}
-  TEACHER     audienceflow-teacher@example.local / ${TEACHER_PASSWORD}
+  ADMIN       ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}
+  TECHNICIAN  ${TECHNICIAN_EMAIL} / ${TECHNICIAN_PASSWORD}
+  TEACHER     ${TEACHER_EMAIL} / ${TEACHER_PASSWORD}
 
 These credentials are local only and are intentionally not committed.
 EOF
