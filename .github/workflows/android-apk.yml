@@ -26,15 +26,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Require Android project
+      - name: Detect Android project
         id: android
         shell: bash
         run: |
           if [ ! -d services/mobile-android ]; then
-            echo "::error::services/mobile-android is missing. Add the native Android project before running APK packaging."
-            exit 1
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+              echo "::error::services/mobile-android is missing. Add the native Android project before running APK packaging."
+              exit 1
+            fi
+            echo "Android project is not present; APK packaging is skipped for this PR/push." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
 
+          echo "exists=true" >> "$GITHUB_OUTPUT"
           if [ -x services/mobile-android/gradlew ] || [ -f services/mobile-android/gradlew ]; then
             echo "gradle_cmd=./gradlew" >> "$GITHUB_OUTPUT"
           elif [ -f services/mobile-android/build.gradle ] || [ -f services/mobile-android/build.gradle.kts ]; then
@@ -45,13 +51,14 @@ jobs:
           fi
 
       - uses: actions/setup-java@v5
+        if: steps.android.outputs.exists == 'true'
         with:
           distribution: temurin
           java-version: "21"
           cache: gradle
 
       - name: Install Gradle when wrapper is absent
-        if: steps.android.outputs.gradle_cmd == 'gradle'
+        if: steps.android.outputs.exists == 'true' && steps.android.outputs.gradle_cmd == 'gradle'
         shell: bash
         run: |
           GRADLE_VERSION=8.14.3
@@ -60,6 +67,7 @@ jobs:
           echo "$RUNNER_TEMP/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
 
       - name: Accept Android SDK licenses
+        if: steps.android.outputs.exists == 'true'
         shell: bash
         run: |
           if [ -z "${ANDROID_HOME:-}" ]; then
@@ -73,6 +81,7 @@ jobs:
           fi
 
       - name: Build debug APK
+        if: steps.android.outputs.exists == 'true'
         shell: bash
         working-directory: services/mobile-android
         run: |
@@ -80,6 +89,7 @@ jobs:
           ${{ steps.android.outputs.gradle_cmd }} --no-daemon assembleDebug
 
       - name: Collect APK
+        if: steps.android.outputs.exists == 'true'
         shell: bash
         run: |
           mkdir -p android-apk
@@ -91,8 +101,8 @@ jobs:
           fi
 
       - uses: actions/upload-artifact@v7
+        if: steps.android.outputs.exists == 'true'
         with:
           name: audienceflow-android-apk
           path: android-apk/*.apk
           if-no-files-found: error
-
