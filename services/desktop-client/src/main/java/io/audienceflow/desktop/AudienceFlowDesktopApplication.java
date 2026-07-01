@@ -5,6 +5,7 @@ import io.audienceflow.desktop.api.LiveConnection;
 import io.audienceflow.desktop.api.PreviewClient;
 import io.audienceflow.desktop.IconGlyph.Name;
 import io.audienceflow.desktop.model.AuthSession;
+import io.audienceflow.desktop.model.AttendanceSummary;
 import io.audienceflow.desktop.model.Camera;
 import io.audienceflow.desktop.model.CameraRequest;
 import io.audienceflow.desktop.model.CreateRoomRequest;
@@ -13,15 +14,19 @@ import io.audienceflow.desktop.model.CurrentAttendance;
 import io.audienceflow.desktop.model.PreviewState;
 import io.audienceflow.desktop.model.Role;
 import io.audienceflow.desktop.model.Room;
+import io.audienceflow.desktop.model.TimelinePoint;
 import io.audienceflow.desktop.model.UserView;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -75,11 +80,19 @@ public final class AudienceFlowDesktopApplication extends Application {
     private static final DateTimeFormatter DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss")
             .withZone(ZoneId.systemDefault());
 
+    private record ReportPeriod(String label, long hours, int bucketMinutes) {
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
     private final AudienceFlowApiClient apiClient = new AudienceFlowApiClient();
     private final ObservableList<CurrentAttendance> currentRows = FXCollections.observableArrayList();
     private final ObservableList<Room> roomRows = FXCollections.observableArrayList();
     private final ObservableList<Camera> cameraRows = FXCollections.observableArrayList();
     private final ObservableList<UserView> userRows = FXCollections.observableArrayList();
+    private final ObservableList<TimelinePoint> reportRows = FXCollections.observableArrayList();
     private final ObservableList<String> eventFeed = FXCollections.observableArrayList();
 
     private Stage stage;
@@ -89,6 +102,10 @@ public final class AudienceFlowDesktopApplication extends Application {
     private LiveConnection liveConnection;
     private PreviewClient previewClient;
     private byte[] latestPreviewFrame;
+    private AttendanceSummary currentReportSummary;
+    private Room currentReportRoom;
+    private Instant currentReportFrom;
+    private Instant currentReportTo;
     private double previewZoom = 1.0;
     private long lastPreviewErrorAt;
 
@@ -119,6 +136,13 @@ public final class AudienceFlowDesktopApplication extends Application {
     private Label previewBalanceLabel;
     private Label previewTracksLabel;
     private Label previewMetaLabel;
+    private ComboBox<Room> reportRoomCombo;
+    private TableView<TimelinePoint> reportTable;
+    private Label reportRangeLabel;
+    private Label reportSamplesLabel;
+    private Label reportAverageLabel;
+    private Label reportPeakLabel;
+    private Label reportConfidenceLabel;
 
     public static void main(String[] args) {
         launch(args);
@@ -287,6 +311,7 @@ public final class AudienceFlowDesktopApplication extends Application {
         tabs.getStyleClass().add("workspace-tabs");
         tabs.getTabs().add(tab("Камера", buildLiveCameraView(), Name.CAMERA));
         tabs.getTabs().add(tab("Оперативно", buildMonitoringView(), Name.LIVE));
+        tabs.getTabs().add(tab("Отчёты", buildReportsView(), Name.REPORT));
         tabs.getTabs().add(tab("Аудитории", buildRoomsView(), Name.ROOMS));
         tabs.getTabs().add(tab("Источники", buildCamerasView(), Name.SERVER));
         if (isAdmin()) {
@@ -484,6 +509,67 @@ public final class AudienceFlowDesktopApplication extends Application {
         content.getStyleClass().add("content");
         VBox.setVgrow(split, Priority.ALWAYS);
         VBox.setVgrow(feedPanel, Priority.NEVER);
+        return content;
+    }
+
+    private Node buildReportsView() {
+        reportRoomCombo = new ComboBox<>(roomRows);
+        reportRoomCombo.setConverter(roomConverter());
+        reportRoomCombo.setMinWidth(260);
+
+        ComboBox<ReportPeriod> period = new ComboBox<>(FXCollections.observableArrayList(
+                new ReportPeriod("Последние 24 часа", 24, 5),
+                new ReportPeriod("Последние 7 дней", 24 * 7, 30),
+                new ReportPeriod("Последние 30 дней", 24 * 30, 120)
+        ));
+        period.getSelectionModel().selectFirst();
+
+        Button build = new Button("Сформировать");
+        build.getStyleClass().add("primary-button");
+        build.setGraphic(icon(Name.REPORT, "on-primary"));
+        Button export = new Button("CSV");
+        export.getStyleClass().add("secondary-button");
+        export.setGraphic(icon(Name.SNAPSHOT, "button-icon"));
+
+        reportRangeLabel = label("Отчёт ещё не сформирован", "muted");
+        reportSamplesLabel = label("0", "metric-value");
+        reportAverageLabel = label("0", "metric-value");
+        reportPeakLabel = label("0", "metric-value");
+        reportConfidenceLabel = label("0%", "metric-value");
+
+        HBox filters = new HBox(12,
+                field("Аудитория", reportRoomCombo),
+                field("Период", period),
+                build,
+                export
+        );
+        filters.getStyleClass().add("report-filters");
+        filters.setAlignment(Pos.BOTTOM_LEFT);
+
+        HBox metrics = new HBox(14,
+                metricCard("Измерений", reportSamplesLabel, "сырые точки за период", Name.REPORT, "teal"),
+                metricCard("Среднее", reportAverageLabel, "людей в аудитории", Name.PEOPLE, "blue"),
+                metricCard("Пик", reportPeakLabel, "максимальная загрузка", Name.ALERT, "amber"),
+                metricCard("Confidence", reportConfidenceLabel, "средняя уверенность", Name.SHIELD, "violet")
+        );
+        metrics.getStyleClass().add("metrics-row");
+
+        reportTable = new TableView<>(reportRows);
+        reportTable.getStyleClass().add("data-table");
+        reportTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        reportTable.getColumns().add(textColumn("Окно", point -> point.bucket() == null ? "n/a" : DATE_TIME_FORMAT.format(point.bucket()), 190));
+        reportTable.getColumns().add(numberColumn("Среднее", TimelinePoint::avgCount, "", 120));
+        reportTable.getColumns().add(numberColumn("Пик", TimelinePoint::peakCount, "", 100));
+        reportTable.getColumns().add(textColumn("Confidence", point -> Math.round(point.avgConfidence() * 100) + "%", 120));
+
+        VBox tablePanel = panel("Агрегаты посещаемости", reportTable);
+        VBox content = new VBox(16, filters, reportRangeLabel, metrics, tablePanel);
+        content.getStyleClass().add("content");
+        VBox.setVgrow(tablePanel, Priority.ALWAYS);
+
+        build.setOnAction(event -> loadReport(period.getValue()));
+        export.setOnAction(event -> exportReportCsv());
+        selectDefaultReportRoom();
         return content;
     }
 
@@ -708,6 +794,7 @@ public final class AudienceFlowDesktopApplication extends Application {
                         return;
                     }
                     roomRows.setAll(roomsFuture.join());
+                    selectDefaultReportRoom();
                     cameraRows.setAll(camerasFuture.join());
                     userRows.setAll(usersFuture.join());
                     applySnapshot(currentFuture.join(), manual ? "REST" : "polling");
@@ -930,6 +1017,103 @@ public final class AudienceFlowDesktopApplication extends Application {
         }
     }
 
+    private void loadReport(ReportPeriod period) {
+        if (session == null) {
+            return;
+        }
+        Room room = reportRoomCombo == null ? null : reportRoomCombo.getSelectionModel().getSelectedItem();
+        if (room == null) {
+            showStatus("Выберите аудиторию для отчёта", true);
+            return;
+        }
+        ReportPeriod selectedPeriod = period == null ? new ReportPeriod("Последние 24 часа", 24, 5) : period;
+        Instant to = Instant.now();
+        Instant from = to.minus(selectedPeriod.hours(), ChronoUnit.HOURS);
+
+        CompletableFuture<AttendanceSummary> summaryFuture = apiClient.attendanceSummary(room.id(), from, to);
+        CompletableFuture<List<TimelinePoint>> timelineFuture = apiClient.timeline(room.id(), selectedPeriod.bucketMinutes(), from, to);
+        showStatus("Формирую отчёт по аудитории " + room.name(), false);
+
+        CompletableFuture.allOf(summaryFuture, timelineFuture)
+                .whenComplete((ignored, failure) -> Platform.runLater(() -> {
+                    if (failure != null) {
+                        showStatus(userMessage(failure), true);
+                        return;
+                    }
+                    currentReportRoom = room;
+                    currentReportFrom = from;
+                    currentReportTo = to;
+                    currentReportSummary = summaryFuture.join();
+                    reportRows.setAll(timelineFuture.join());
+                    applyReportSummary(currentReportSummary, room);
+                    showStatus("Отчёт сформирован", false);
+                }));
+    }
+
+    private void applyReportSummary(AttendanceSummary summary, Room room) {
+        setText(reportSamplesLabel, String.valueOf(summary.samples()));
+        setText(reportAverageLabel, String.valueOf(summary.averageCount()));
+        setText(reportPeakLabel, String.valueOf(summary.peakCount()));
+        setText(reportConfidenceLabel, Math.round(summary.averageConfidence() * 100) + "%");
+        setText(
+                reportRangeLabel,
+                room.name() + " · " + DATE_TIME_FORMAT.format(summary.from())
+                        + " - " + DATE_TIME_FORMAT.format(summary.to())
+                        + " · окон: " + reportRows.size()
+        );
+    }
+
+    private void exportReportCsv() {
+        if (currentReportSummary == null || currentReportRoom == null || currentReportFrom == null || currentReportTo == null) {
+            showStatus("Сначала сформируйте отчёт", true);
+            return;
+        }
+        Path directory = Path.of(System.getProperty("user.home"), "Documents", "AudienceFlow");
+        Path target = directory.resolve("audienceflow-report-room-" + currentReportRoom.id() + "-"
+                + DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                .withZone(ZoneId.systemDefault())
+                .format(Instant.now()) + ".csv");
+        try {
+            Files.createDirectories(directory);
+            Files.writeString(target, buildReportCsv(), StandardCharsets.UTF_8);
+            showStatus("CSV сохранён: " + target, false);
+        } catch (IOException e) {
+            showStatus("Не удалось сохранить CSV: " + e.getMessage(), true);
+        }
+    }
+
+    private String buildReportCsv() {
+        StringBuilder csv = new StringBuilder("\uFEFF");
+        appendCsvRow(csv, "AudienceFlow report");
+        appendCsvRow(csv, "room_id", String.valueOf(currentReportRoom.id()));
+        appendCsvRow(csv, "room", currentReportRoom.name());
+        appendCsvRow(csv, "building", currentReportRoom.building());
+        appendCsvRow(csv, "floor", currentReportRoom.floor());
+        appendCsvRow(csv, "from", currentReportFrom.toString());
+        appendCsvRow(csv, "to", currentReportTo.toString());
+        appendCsvRow(csv);
+        appendCsvRow(csv, "samples", "average_count", "peak_count", "average_confidence");
+        appendCsvRow(
+                csv,
+                String.valueOf(currentReportSummary.samples()),
+                String.valueOf(currentReportSummary.averageCount()),
+                String.valueOf(currentReportSummary.peakCount()),
+                String.format(Locale.ROOT, "%.3f", currentReportSummary.averageConfidence())
+        );
+        appendCsvRow(csv);
+        appendCsvRow(csv, "bucket", "avg_count", "peak_count", "avg_confidence");
+        for (TimelinePoint point : reportRows) {
+            appendCsvRow(
+                    csv,
+                    point.bucket() == null ? "" : point.bucket().toString(),
+                    String.valueOf(point.avgCount()),
+                    String.valueOf(point.peakCount()),
+                    String.format(Locale.ROOT, "%.3f", point.avgConfidence())
+            );
+        }
+        return csv.toString();
+    }
+
     private void updateMetrics() {
         int people = currentRows.stream().mapToInt(CurrentAttendance::count).sum();
         long attention = currentRows.stream().filter(item -> !"normal".equals(item.status())).count();
@@ -1079,6 +1263,20 @@ public final class AudienceFlowDesktopApplication extends Application {
         return field;
     }
 
+    private StringConverter<Room> roomConverter() {
+        return new StringConverter<>() {
+            @Override
+            public String toString(Room value) {
+                return value == null ? "" : value.name();
+            }
+
+            @Override
+            public Room fromString(String value) {
+                return null;
+            }
+        };
+    }
+
     private Node loginSignalPanel() {
         VBox panel = new VBox(14);
         panel.getStyleClass().add("signal-panel");
@@ -1225,6 +1423,16 @@ public final class AudienceFlowDesktopApplication extends Application {
         appendFeed((error ? "Ошибка: " : "") + message);
     }
 
+    private void selectDefaultReportRoom() {
+        if (reportRoomCombo == null || roomRows.isEmpty()) {
+            return;
+        }
+        Room selected = reportRoomCombo.getSelectionModel().getSelectedItem();
+        if (selected == null || roomRows.stream().noneMatch(room -> room.id() == selected.id())) {
+            reportRoomCombo.getSelectionModel().selectFirst();
+        }
+    }
+
     private void updatePreviewStatus(String message, boolean error) {
         setPreviewStatusText(message, error);
         appendFeed((error ? "Preview: ошибка: " : "Preview: ") + message);
@@ -1284,6 +1492,24 @@ public final class AudienceFlowDesktopApplication extends Application {
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(name + " должен быть целым числом", e);
         }
+    }
+
+    private void appendCsvRow(StringBuilder builder, String... values) {
+        for (int index = 0; index < values.length; index++) {
+            if (index > 0) {
+                builder.append(';');
+            }
+            builder.append(csvCell(values[index]));
+        }
+        builder.append('\n');
+    }
+
+    private String csvCell(String value) {
+        String safe = value == null ? "" : value;
+        if (!safe.isBlank() && "=+-@".indexOf(safe.charAt(0)) >= 0) {
+            safe = "'" + safe;
+        }
+        return "\"" + safe.replace("\"", "\"\"") + "\"";
     }
 
     private String sourceLabel(String source) {
