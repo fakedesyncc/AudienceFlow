@@ -82,6 +82,16 @@ RTSP/HTTP камера:
 PREVIEW_ADDR=127.0.0.1:8090 CAMERA_SOURCE=rtsp://your-camera-host:8554/live DETECTOR=hog python -m app.main
 ```
 
+Проверка по готовому фото или видео без запуска камеры:
+
+```bash
+cd services/vision-worker
+python -m app.main analyze ./samples/auditorium.jpg --detector hog --output ./samples/auditorium-annotated.jpg
+python -m app.main analyze ./samples/lecture.mp4 --detector hog --frame-step 5 --max-frames 300 --output ./samples/lecture-annotated.mp4 --json-output ./samples/lecture.json
+```
+
+Для реальных аудиторий лучше поставить YOLO и запускать `--detector yolo`; HOG оставлен как лёгкий вариант без ML-модели.
+
 Для preview доступны:
 
 - `/v1/frame.jpg` — последний JPEG-кадр с рамками;

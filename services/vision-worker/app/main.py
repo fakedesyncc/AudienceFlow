@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -13,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
@@ -72,6 +74,11 @@ class DetectionResult:
     count: int
     confidence: float
     detections: list[Detection]
+
+
+@dataclass(frozen=True)
+class OverlayOptions:
+    preview_width: int
 
 
 @dataclass(frozen=True)
@@ -688,12 +695,273 @@ def safe_send(gateway: GatewayClient, count: int, confidence: float) -> None:
         print(json.dumps({"event": "send_failed", "error": str(exc)}), file=sys.stderr, flush=True)
 
 
+def cli(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "analyze":
+        return analyze_cli(args[1:])
+    return main()
+
+
+def analyze_cli(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m app.main analyze",
+        description="Detect and count people in a photo or video file.",
+    )
+    parser.add_argument("source", help="Path to image or video file")
+    parser.add_argument("--media-type", choices=["auto", "image", "video"], default="auto")
+    parser.add_argument("--detector", choices=["hog", "yolo", "simulation"], default=env("DETECTOR", "hog").lower())
+    parser.add_argument("--yolo-model", default=env("YOLO_MODEL", "yolov8n.pt"))
+    parser.add_argument("--output", help="Optional annotated image/video output path")
+    parser.add_argument("--json-output", help="Optional path for the JSON report")
+    parser.add_argument("--preview-width", type=int, default=int(env("PREVIEW_WIDTH", "1280")))
+    parser.add_argument("--confidence-threshold", type=float, default=float(env("CONFIDENCE_THRESHOLD", "0.45")))
+    parser.add_argument("--stabilization-window", type=int, default=int(env("STABILIZATION_WINDOW", "5")))
+    parser.add_argument("--frame-step", type=int, default=5, help="Analyze each Nth frame for video")
+    parser.add_argument("--max-frames", type=int, default=300, help="Maximum sampled frames for video")
+    parser.add_argument("--line", help="Optional video flow line as x1,y1,x2,y2")
+
+    args = parser.parse_args(argv)
+    source = Path(args.source).expanduser()
+    if not source.exists() or not source.is_file():
+        raise FileNotFoundError(f"Media file not found: {source}")
+    if args.preview_width < 320:
+        raise ValueError("--preview-width must be at least 320")
+    if args.frame_step < 1:
+        raise ValueError("--frame-step must be positive")
+    if args.max_frames < 1:
+        raise ValueError("--max-frames must be positive")
+    if not 0 <= args.confidence_threshold <= 1:
+        raise ValueError("--confidence-threshold must be between 0 and 1")
+
+    detector = create_detector_by_name(args.detector, args.yolo_model)
+    media_type = resolve_media_type(source, args.media_type)
+    output = Path(args.output).expanduser() if args.output else None
+    json_output = Path(args.json_output).expanduser() if args.json_output else None
+    line_config = parse_line_config(args.line) if args.line else None
+
+    if media_type == "image":
+        report = analyze_image_file(
+            source,
+            detector,
+            args.detector,
+            output,
+            args.preview_width,
+            args.confidence_threshold,
+            line_config,
+        )
+    else:
+        report = analyze_video_file(
+            source,
+            detector,
+            args.detector,
+            output,
+            args.preview_width,
+            args.confidence_threshold,
+            args.stabilization_window,
+            args.frame_step,
+            args.max_frames,
+            line_config,
+        )
+
+    body = json.dumps(report, ensure_ascii=False, indent=2)
+    if json_output:
+        json_output.parent.mkdir(parents=True, exist_ok=True)
+        json_output.write_text(body + "\n", encoding="utf-8")
+    print(body, flush=True)
+    return 0
+
+
+def analyze_image_file(
+    source: Path,
+    detector: Detector,
+    detector_name: str,
+    output: Path | None,
+    preview_width: int,
+    confidence_threshold: float,
+    line_config: tuple[int, int, int, int] | None,
+) -> dict[str, Any]:
+    import cv2
+
+    frame = cv2.imread(str(source))
+    if frame is None:
+        raise ValueError(f"Cannot read image file: {source}")
+
+    stabilizer = CountStabilizer(1, confidence_threshold)
+    line_counter = LineCrossingCounter(line_config)
+    analysis = analyze_frame(cv2, frame, detector, stabilizer, line_counter, preview_width, fps=0.0)
+    output_path = write_annotated_image(cv2, output, analysis["overlay"]) if output else None
+
+    return {
+        "media_type": "image",
+        "source": str(source),
+        "detector": detector_name,
+        "count": analysis["count"],
+        "raw_count": analysis["raw_count"],
+        "confidence": analysis["confidence"],
+        "detections": [detection.to_json() for detection in analysis["detections"]],
+        "line": analysis["line_state"].get("line"),
+        "output": str(output_path) if output_path else None,
+        "analyzed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def analyze_video_file(
+    source: Path,
+    detector: Detector,
+    detector_name: str,
+    output: Path | None,
+    preview_width: int,
+    confidence_threshold: float,
+    stabilization_window: int,
+    frame_step: int,
+    max_frames: int,
+    line_config: tuple[int, int, int, int] | None,
+) -> dict[str, Any]:
+    import cv2
+
+    capture = cv2.VideoCapture(str(source))
+    if not capture.isOpened():
+        raise ValueError(f"Cannot open video file: {source}")
+
+    fps = capture.get(cv2.CAP_PROP_FPS) or 25.0
+    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    stabilizer = CountStabilizer(stabilization_window, confidence_threshold)
+    line_counter = LineCrossingCounter(line_config)
+    writer: Any | None = None
+    frame_index = -1
+    sampled = 0
+    counts: list[int] = []
+    confidences: list[float] = []
+    frames: list[dict[str, Any]] = []
+    output_path: Path | None = None
+
+    try:
+        while sampled < max_frames:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            frame_index += 1
+            if frame_index % frame_step != 0:
+                continue
+
+            analysis = analyze_frame(cv2, frame, detector, stabilizer, line_counter, preview_width, fps=fps / frame_step)
+            counts.append(int(analysis["count"]))
+            confidences.append(float(analysis["confidence"]))
+            sampled += 1
+            frames.append({
+                "frame": frame_index,
+                "time_seconds": round(frame_index / max(fps, 0.001), 3),
+                "count": analysis["count"],
+                "raw_count": analysis["raw_count"],
+                "confidence": analysis["confidence"],
+                "detections": len(analysis["detections"]),
+            })
+
+            if output:
+                if writer is None:
+                    output_path, writer = create_video_writer(cv2, output, analysis["overlay"], fps / frame_step)
+                writer.write(analysis["overlay"])
+    finally:
+        capture.release()
+        if writer is not None:
+            writer.release()
+
+    if not counts:
+        raise ValueError(f"No frames were analyzed in video: {source}")
+
+    return {
+        "media_type": "video",
+        "source": str(source),
+        "detector": detector_name,
+        "count": int(round(statistics.median(counts))),
+        "average_count": round(statistics.fmean(counts), 2),
+        "peak_count": max(counts),
+        "last_count": counts[-1],
+        "average_confidence": round(statistics.fmean(confidences), 3) if confidences else 0.0,
+        "frames_analyzed": sampled,
+        "frame_step": frame_step,
+        "total_frames": total_frames,
+        "fps": round(fps, 3),
+        "line": line_counter.snapshot(),
+        "frames": frames,
+        "output": str(output_path) if output_path else None,
+        "analyzed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def analyze_frame(
+    cv2: Any,
+    frame: Any,
+    detector: Detector,
+    stabilizer: CountStabilizer,
+    line_counter: LineCrossingCounter,
+    preview_width: int,
+    fps: float,
+) -> dict[str, Any]:
+    result = detector.detect(frame)
+    tracked_detections, line_state = line_counter.update(result.detections)
+    stable_count, stable_confidence = stabilizer.push(result.count, result.confidence)
+    overlay = draw_overlay(
+        cv2,
+        frame,
+        tracked_detections,
+        stable_count,
+        stable_confidence,
+        OverlayOptions(preview_width),
+        fps,
+        line_state,
+    )
+    return {
+        "count": stable_count,
+        "raw_count": result.count,
+        "confidence": stable_confidence,
+        "detections": tracked_detections,
+        "line_state": line_state,
+        "overlay": overlay,
+    }
+
+
+def write_annotated_image(cv2: Any, output: Path, overlay: Any) -> Path:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output), overlay):
+        raise ValueError(f"Cannot write annotated image: {output}")
+    return output
+
+
+def create_video_writer(cv2: Any, output: Path, first_frame: Any, fps: float) -> tuple[Path, Any]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    height, width = first_frame.shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output), fourcc, max(1.0, fps), (width, height))
+    if not writer.isOpened():
+        raise ValueError(f"Cannot write annotated video: {output}")
+    return output, writer
+
+
+def resolve_media_type(source: Path, requested: str) -> str:
+    if requested != "auto":
+        return requested
+    suffix = source.suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}:
+        return "image"
+    if suffix in {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}:
+        return "video"
+    raise ValueError("Cannot infer media type. Use --media-type image or --media-type video.")
+
+
 def create_detector(cfg: Config) -> Detector:
-    if cfg.detector == "simulation":
+    return create_detector_by_name(cfg.detector, cfg.yolo_model)
+
+
+def create_detector_by_name(detector_name: str, yolo_model: str) -> Detector:
+    detector = detector_name.lower()
+    if detector == "simulation":
         return SimulationDetector()
-    if cfg.detector == "hog":
+    if detector == "hog":
         return HogDetector()
-    return YoloDetector(cfg.yolo_model)
+    if detector == "yolo":
+        return YoloDetector(yolo_model)
+    raise ValueError("detector must be one of: simulation, hog, yolo")
 
 
 def resize_for_detection(cv2: Any, frame: Any, max_width: int = 960) -> tuple[Any, float]:
@@ -871,7 +1139,7 @@ def env(key: str, default: str) -> str:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(cli())
     except KeyboardInterrupt:
         print(json.dumps({"event": "worker_stopped"}), flush=True)
         raise SystemExit(0)
