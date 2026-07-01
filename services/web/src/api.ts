@@ -93,7 +93,7 @@ export function createPresentationSession(): AuthSession {
     user: {
       id: 'presentation',
       email: '',
-      displayName: 'Презентационный мониторинг',
+      displayName: 'Просмотр',
       role: 'TEACHER',
       active: true,
     },
