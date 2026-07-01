@@ -1,0 +1,98 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/android-apk.yml"
+      - "services/mobile-android/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/android-apk.yml"
+      - "services/mobile-android/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-apk:
+    name: Android debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Require Android project
+        id: android
+        shell: bash
+        run: |
+          if [ ! -d services/mobile-android ]; then
+            echo "::error::services/mobile-android is missing. Add the native Android project before running APK packaging."
+            exit 1
+          fi
+
+          if [ -x services/mobile-android/gradlew ] || [ -f services/mobile-android/gradlew ]; then
+            echo "gradle_cmd=./gradlew" >> "$GITHUB_OUTPUT"
+          elif [ -f services/mobile-android/build.gradle ] || [ -f services/mobile-android/build.gradle.kts ]; then
+            echo "gradle_cmd=gradle" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No Gradle wrapper or root build.gradle found in services/mobile-android."
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Install Gradle when wrapper is absent
+        if: steps.android.outputs.gradle_cmd == 'gradle'
+        shell: bash
+        run: |
+          GRADLE_VERSION=8.14.3
+          curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$RUNNER_TEMP/gradle.zip"
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          if [ -z "${ANDROID_HOME:-}" ]; then
+            echo "::error::ANDROID_HOME is not set on this runner."
+            exit 1
+          fi
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses >/dev/null || true
+          fi
+
+      - name: Build debug APK
+        shell: bash
+        working-directory: services/mobile-android
+        run: |
+          chmod +x gradlew 2>/dev/null || true
+          ${{ steps.android.outputs.gradle_cmd }} --no-daemon assembleDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          mkdir -p android-apk
+          find services/mobile-android -type f -name "*.apk" -path "*/build/outputs/apk/*" -exec cp {} android-apk/ \;
+
+          if ! compgen -G "android-apk/*.apk" >/dev/null; then
+            echo "::error::Gradle finished, but no APK was found under build/outputs/apk."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: audienceflow-android-apk
+          path: android-apk/*.apk
+          if-no-files-found: error
+

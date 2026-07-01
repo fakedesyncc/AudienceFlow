@@ -1,0 +1,114 @@
+name: Publish GHCR Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_latest:
+        description: Also publish the latest tag
+        required: false
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-ghcr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: analytics-api
+            context: services/analytics-api
+            description: Java Spring analytics API
+          - service: ingest-gateway
+            context: services/ingest-gateway
+            description: Go ingest gateway
+          - service: vision-worker
+            context: services/vision-worker
+            description: Python vision worker
+          - service: web
+            context: services/web
+            description: React web demo
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Login to GHCR
+        shell: bash
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push image
+        shell: bash
+        env:
+          PUSH_LATEST_INPUT: ${{ inputs.push_latest }}
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+        run: |
+          set -euo pipefail
+
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER_LC}/audienceflow-${{ matrix.service }}"
+          SHORT_SHA="${GITHUB_SHA::12}"
+          TAGS=("${IMAGE}:sha-${SHORT_SHA}")
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAGS+=("${IMAGE}:${GITHUB_REF_NAME}")
+            TAGS+=("${IMAGE}:latest")
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${PUSH_LATEST_INPUT:-true}" = "true" ]; then
+            TAGS+=("${IMAGE}:latest")
+          fi
+
+          declare -A SEEN=()
+          UNIQUE_TAGS=()
+          for tag in "${TAGS[@]}"; do
+            if [ -z "${SEEN[$tag]:-}" ]; then
+              UNIQUE_TAGS+=("$tag")
+              SEEN[$tag]=1
+            fi
+          done
+
+          TAG_ARGS=()
+          for tag in "${UNIQUE_TAGS[@]}"; do
+            TAG_ARGS+=(--tag "$tag")
+          done
+
+          BUILD_ARGS=()
+          if [ "${{ matrix.service }}" = "web" ]; then
+            BUILD_ARGS+=(--build-arg "VITE_BASE_PATH=/AudienceFlow/")
+            if [ -n "${VITE_API_URL:-}" ]; then
+              BUILD_ARGS+=(--build-arg "VITE_API_URL=${VITE_API_URL}")
+            fi
+          fi
+
+          docker build \
+            "${TAG_ARGS[@]}" \
+            "${BUILD_ARGS[@]}" \
+            --label "org.opencontainers.image.title=AudienceFlow ${{ matrix.service }}" \
+            --label "org.opencontainers.image.description=${{ matrix.description }}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            "${{ matrix.context }}"
+
+          for tag in "${UNIQUE_TAGS[@]}"; do
+            docker push "$tag"
+          done
+
+          {
+            echo "### Published ${{ matrix.service }}"
+            for tag in "${UNIQUE_TAGS[@]}"; do
+              echo "- \`$tag\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+

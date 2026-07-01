@@ -2,6 +2,8 @@
 
 ![CI](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/ci.yml/badge.svg)
 ![GitHub Pages](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/deploy-pages.yml/badge.svg)
+![Android APK](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/android-apk.yml/badge.svg)
+![GHCR](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/publish-ghcr.yml/badge.svg)
 
 AudienceFlow — распределённая система подсчёта посещаемости для аудиторий, лабораторий и учебных залов. Проект сделан как практическая инженерная работа: несколько сервисов, понятные границы ответственности, контейнерный запуск, роли пользователей, live-мониторинг и основной desktop-клиент для Windows, macOS и Linux.
 
@@ -223,6 +225,12 @@ make down      # остановить compose stack
 ## Деплой
 
 GitHub Pages публикует только статическую web-демонстрацию. Backend остаётся контейнерным и запускается отдельно: локально, на VPS, на университетском сервере или в облаке. Desktop-клиенты собираются отдельным workflow `Build Desktop Clients`.
+
+Артефакты проекта:
+
+- `Release` — ручной workflow для сборки web, desktop runtime для Linux/macOS/Windows и Android APK, если в репозитории есть `services/mobile-android`;
+- `Build Android APK` — отдельная сборка debug APK и загрузка файла в GitHub Actions artifacts;
+- `Publish GHCR Images` — публикация Docker images в GitHub Container Registry: `audienceflow-analytics-api`, `audienceflow-ingest-gateway`, `audienceflow-vision-worker`, `audienceflow-web`.
 
 Публичная Pages-версия открывает презентационный мониторинг без авторизации. Для реального стенда можно ввести API URL прямо на экране входа. Repository variable `VITE_API_URL` необязательна; она нужна только как предзаполненное значение:
 
