@@ -1,5 +1,6 @@
 package io.audienceflow.api.admin;
 
+import io.audienceflow.api.security.PasswordPolicy;
 import io.audienceflow.api.users.Role;
 import io.audienceflow.api.users.UserRepository;
 import io.audienceflow.api.users.UserView;
@@ -42,7 +43,7 @@ public class AdminUserController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public UserView create(@Valid @RequestBody CreateUserRequest request) {
-        validatePassword(request.password());
+        validatePassword(request.email(), request.password());
         if (userRepository.findByEmail(request.email()).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "User already exists");
         }
@@ -55,9 +56,11 @@ public class AdminUserController {
         return UserView.from(user);
     }
 
-    private static void validatePassword(String password) {
-        if ("admin".equals(password) || password.length() < 12) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Password must be at least 12 characters");
+    private static void validatePassword(String email, String password) {
+        try {
+            PasswordPolicy.requireStrongUserPassword(email, password);
+        } catch (IllegalArgumentException exc) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exc.getMessage(), exc);
         }
     }
 
@@ -65,7 +68,7 @@ public class AdminUserController {
             @Email @NotBlank String email,
             @NotBlank @Size(max = 160) String displayName,
             @NotNull Role role,
-            @NotBlank @Size(min = 12, max = 128) String password
+            @NotBlank @Size(min = PasswordPolicy.MIN_LENGTH, max = PasswordPolicy.MAX_LENGTH) String password
     ) {
     }
 }

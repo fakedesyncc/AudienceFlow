@@ -4,7 +4,13 @@
 
 ## Локальный запуск
 
-1. Сгенерировать `.env`:
+1. Сгенерировать `.env`. Для реального показа используй интерактивный режим:
+
+   ```bash
+   INTERACTIVE=1 ./scripts/bootstrap-env.sh
+   ```
+
+   Автоматический режим оставлен для локального тестового стенда:
 
    ```bash
    ./scripts/bootstrap-env.sh
@@ -36,7 +42,7 @@
 
 ## Что создаёт bootstrap
 
-`scripts/bootstrap-env.sh` создаёт `.env` и печатает случайные стартовые данные:
+`scripts/bootstrap-env.sh` создаёт `.env` с правами `600`. В режиме `INTERACTIVE=1` скрипт спрашивает реальные email:
 
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`;
 - `TECHNICIAN_EMAIL` / `TECHNICIAN_PASSWORD`;
@@ -44,7 +50,7 @@
 
 Также генерируются `POSTGRES_PASSWORD`, `INGEST_API_KEY` и `JWT_SECRET`. Файл `.env` добавлен в `.gitignore`.
 
-Эти email и пароли не лежат в репозитории. Их видит только человек, который запустил bootstrap-скрипт.
+Эти email и пароли не лежат в репозитории. Их видит только человек, который запустил bootstrap-скрипт. Слабые пароли и дефолтный логин `admin` отклоняются на уровне bootstrap и backend API.
 
 ## Worker
 

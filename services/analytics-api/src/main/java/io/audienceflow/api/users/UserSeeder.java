@@ -1,5 +1,6 @@
 package io.audienceflow.api.users;
 
+import io.audienceflow.api.security.PasswordPolicy;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
@@ -50,11 +51,10 @@ public class UserSeeder implements ApplicationRunner {
         if (!StringUtils.hasText(user.email()) || !StringUtils.hasText(user.password())) {
             throw new IllegalStateException(user.role() + " seed email and password are required");
         }
-        if ("admin".equalsIgnoreCase(user.email()) || "admin".equals(user.password())) {
-            throw new IllegalStateException("Default weak bootstrap credentials are not allowed");
-        }
-        if (user.password().length() < 12) {
-            throw new IllegalStateException(user.role() + " seed password must be at least 12 characters");
+        try {
+            PasswordPolicy.requireStrongUserPassword(user.email(), user.password());
+        } catch (IllegalArgumentException exc) {
+            throw new IllegalStateException(user.role() + " seed credential rejected: " + exc.getMessage(), exc);
         }
     }
 
