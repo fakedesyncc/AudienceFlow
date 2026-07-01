@@ -26,7 +26,6 @@ import {
   YAxis,
 } from 'recharts';
 import {
-  DEMO_MODE,
   createCamera,
   createRoom,
   createUser,
@@ -36,9 +35,11 @@ import {
   fetchRooms,
   fetchTimeline,
   fetchUsers,
+  loadRuntimeConfig,
   liveSocketUrl,
   login,
   parseLiveMessage,
+  saveRuntimeConfig,
 } from './api';
 import type {
   AuthSession,
@@ -49,6 +50,7 @@ import type {
   CurrentAttendance,
   Role,
   Room,
+  RuntimeConfig,
   TimelinePoint,
   UserView,
 } from './types';
@@ -64,6 +66,7 @@ const roleLabels: Record<Role, string> = {
 
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => restoreSession());
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
   const [activeView, setActiveView] = useState<View>('overview');
   const [current, setCurrent] = useState<CurrentAttendance[]>([]);
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
@@ -127,7 +130,7 @@ export function App() {
     if (!session) {
       return;
     }
-    const url = liveSocketUrl(session.token);
+    const url = liveSocketUrl(session);
     if (!url) {
       return;
     }
@@ -143,7 +146,13 @@ export function App() {
   const dashboardStats = useMemo(() => buildStats(current, cameras), [current, cameras]);
 
   if (!session) {
-    return <LoginScreen onLogin={setSession} />;
+    return (
+      <LoginScreen
+        config={runtimeConfig}
+        onConfigChange={(config) => setRuntimeConfig(saveRuntimeConfig(config))}
+        onLogin={setSession}
+      />
+    );
   }
 
   const navigation = [
@@ -194,7 +203,7 @@ export function App() {
           </div>
           <div>
             <strong>AudienceFlow</strong>
-            <span>{DEMO_MODE ? 'GitHub Pages demo' : 'Live stack'}</span>
+            <span>{session.demo ? 'GitHub Pages demo' : session.apiUrl}</span>
           </div>
         </div>
 
@@ -278,18 +287,33 @@ export function App() {
   );
 }
 
-function LoginScreen({ onLogin }: { onLogin: (session: AuthSession) => void }) {
-  const [email, setEmail] = useState(DEMO_MODE ? demoAccounts[0].email : '');
-  const [password, setPassword] = useState(DEMO_MODE ? demoAccounts[0].password : '');
+function LoginScreen({
+  config,
+  onConfigChange,
+  onLogin,
+}: {
+  config: RuntimeConfig;
+  onConfigChange: (config: RuntimeConfig) => void;
+  onLogin: (session: AuthSession) => void;
+}) {
+  const [email, setEmail] = useState(config.mode === 'demo' ? demoAccounts[0].email : '');
+  const [password, setPassword] = useState(config.mode === 'demo' ? demoAccounts[0].password : '');
+  const [draftConfig, setDraftConfig] = useState(config);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setDraftConfig(config);
+  }, [config]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      const session = await login(email, password);
+      const savedConfig = saveRuntimeConfig(draftConfig);
+      onConfigChange(savedConfig);
+      const session = await login(email, password, savedConfig);
       localStorage.setItem(sessionStorageKey, JSON.stringify(session));
       onLogin(session);
     } catch (err) {
@@ -308,11 +332,44 @@ function LoginScreen({ onLogin }: { onLogin: (session: AuthSession) => void }) {
           </div>
           <div>
             <strong>AudienceFlow</strong>
-            <span>Контроль посещаемости</span>
+            <span>{draftConfig.mode === 'demo' ? 'Демо-режим' : 'Подключение к API'}</span>
           </div>
         </div>
 
         <form onSubmit={submit} className="login-form">
+          <div className="mode-switch" role="group" aria-label="Режим подключения">
+            <button
+              type="button"
+              className={draftConfig.mode === 'demo' ? 'selected' : ''}
+              onClick={() => {
+                setDraftConfig({ ...draftConfig, mode: 'demo' });
+                setEmail(demoAccounts[0].email);
+                setPassword(demoAccounts[0].password);
+              }}
+            >
+              Demo
+            </button>
+            <button
+              type="button"
+              className={draftConfig.mode === 'api' ? 'selected' : ''}
+              onClick={() => setDraftConfig({ ...draftConfig, mode: 'api' })}
+            >
+              API
+            </button>
+          </div>
+
+          {draftConfig.mode === 'api' && (
+            <label>
+              API URL
+              <input
+                value={draftConfig.apiUrl}
+                onChange={(event) => setDraftConfig({ ...draftConfig, apiUrl: event.target.value })}
+                placeholder="https://example.com/api"
+                required
+              />
+            </label>
+          )}
+
           <label>
             Email
             <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
@@ -334,7 +391,7 @@ function LoginScreen({ onLogin }: { onLogin: (session: AuthSession) => void }) {
           </button>
         </form>
 
-        {DEMO_MODE && (
+        {draftConfig.mode === 'demo' && (
           <div className="demo-logins">
             {demoAccounts.map((account) => (
               <button
@@ -863,7 +920,12 @@ function restoreSession(): AuthSession | null {
     return null;
   }
   try {
-    return JSON.parse(raw) as AuthSession;
+    const parsed = JSON.parse(raw) as AuthSession;
+    if (!parsed.token || !parsed.user || (!parsed.demo && !parsed.apiUrl)) {
+      localStorage.removeItem(sessionStorageKey);
+      return null;
+    }
+    return parsed.demo ? { ...parsed, apiUrl: null } : parsed;
   } catch {
     localStorage.removeItem(sessionStorageKey);
     return null;

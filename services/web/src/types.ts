@@ -1,4 +1,10 @@
 export type Role = 'TEACHER' | 'TECHNICIAN' | 'ADMIN';
+export type RuntimeMode = 'demo' | 'api';
+
+export interface RuntimeConfig {
+  mode: RuntimeMode;
+  apiUrl: string;
+}
 
 export interface UserView {
   id: string;
@@ -13,6 +19,7 @@ export interface AuthSession {
   user: UserView;
   expiresInMinutes: number;
   demo: boolean;
+  apiUrl: string | null;
 }
 
 export interface Room {
