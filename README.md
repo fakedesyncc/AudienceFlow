@@ -168,6 +168,16 @@ pip install -r requirements-yolo.txt
 DETECTOR=yolo YOLO_MODEL=yolov8n.pt python -m app.main
 ```
 
+Тестовое распознавание с готового фото или видео без камеры:
+
+```bash
+cd services/vision-worker
+python -m app.main analyze ./samples/auditorium.jpg --detector hog --output ./samples/auditorium-annotated.jpg
+python -m app.main analyze ./samples/lecture.mp4 --detector hog --frame-step 5 --max-frames 300 --output ./samples/lecture-annotated.mp4
+```
+
+Для лучшего качества на реальных аудиториях используй `--detector yolo` после установки `requirements-yolo.txt`. JSON выводится в stdout, а при `--json-output report.json` сохраняется отдельным файлом.
+
 ## Команды
 
 ```bash

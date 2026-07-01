@@ -20,6 +20,42 @@ Example:
 CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
 ```
 
+## Photo/video analysis for tests
+
+Use the same worker to count people in a saved image or video without starting a camera stream:
+
+```bash
+python -m app.main analyze ./samples/auditorium.jpg \
+  --detector hog \
+  --output ./samples/auditorium-annotated.jpg \
+  --json-output ./samples/auditorium.json
+```
+
+For a video:
+
+```bash
+python -m app.main analyze ./samples/lecture.mp4 \
+  --detector hog \
+  --frame-step 5 \
+  --max-frames 300 \
+  --output ./samples/lecture-annotated.mp4 \
+  --json-output ./samples/lecture.json
+```
+
+The JSON report includes:
+
+- `count` — image count or median video count;
+- `average_count`, `peak_count`, `last_count` for video;
+- `confidence` / `average_confidence`;
+- sampled frame counts and optional line-crossing counters.
+
+For better recognition quality install YOLO dependencies and switch the detector:
+
+```bash
+pip install -r requirements-yolo.txt
+python -m app.main analyze ./samples/auditorium.jpg --detector yolo --output ./samples/auditorium-yolo.jpg
+```
+
 ## Live preview for desktop
 
 Preview is enabled by default and serves:
