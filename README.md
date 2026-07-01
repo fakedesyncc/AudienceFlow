@@ -19,6 +19,15 @@ To run a simulated camera worker:
 docker compose --profile worker up --build vision-worker
 ```
 
+Useful shortcuts:
+
+```bash
+make test
+make smoke
+```
+
+`make smoke` posts a sample attendance event to the Go gateway. Run it after the stack is up.
+
 ## Services
 
 | Service | Language | Purpose |
