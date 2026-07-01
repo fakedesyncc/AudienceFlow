@@ -395,6 +395,17 @@
     -fx-max-width: 380px;
 }
 
+.controls-scroll {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 0;
+    -fx-pref-width: 382px;
+}
+
+.controls-scroll > .viewport {
+    -fx-background-color: transparent;
+}
+
 .camera-stat {
     -fx-background-color: #fafaf9;
     -fx-background-radius: 12px;
@@ -403,10 +414,18 @@
     -fx-padding: 12px;
 }
 
+.flow-stat {
+    -fx-min-width: 0;
+}
+
 .camera-value {
     -fx-font-size: 28px;
     -fx-font-weight: 900;
     -fx-text-fill: #c2410c;
+}
+
+.line-field {
+    -fx-pref-width: 74px;
 }
 
 .split-pane {
