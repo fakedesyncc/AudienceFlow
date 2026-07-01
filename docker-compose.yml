@@ -74,8 +74,14 @@ services:
       DETECTOR: simulation
       SEND_INTERVAL_SECONDS: 5
       STABILIZATION_WINDOW: 5
+      PREVIEW_ENABLED: "true"
+      PREVIEW_ADDR: 0.0.0.0:8090
+      PREVIEW_WIDTH: 960
+      PREVIEW_JPEG_QUALITY: 82
     depends_on:
       - ingest-gateway
+    ports:
+      - "8090:8090"
 
   web:
     build:

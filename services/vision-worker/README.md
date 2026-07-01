@@ -1,6 +1,6 @@
 # Vision Worker
 
-The worker reads a camera source, estimates the number of people, stabilizes the count with a sliding median, and sends events to the Go ingest gateway.
+The worker reads a camera source, estimates the number of people, stabilizes the count with a sliding median, sends events to the Go ingest gateway, and can expose a local live preview for the JavaFX desktop client.
 
 Supported sources:
 
@@ -19,3 +19,26 @@ Example:
 ```bash
 CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
 ```
+
+## Live preview for desktop
+
+Preview is enabled by default and serves:
+
+- `GET /v1/frame.jpg` — latest JPEG frame with detection overlay;
+- `GET /v1/stream.mjpg` — MJPEG stream for simple viewers;
+- `GET /v1/state` — JSON state: count, confidence, FPS, detections;
+- `GET /healthz` — health check.
+
+Secure preview with a random token when the worker is reachable outside localhost:
+
+```bash
+PREVIEW_TOKEN=$(openssl rand -hex 24)
+PREVIEW_ADDR=127.0.0.1:8090 \
+CAMERA_SOURCE=0 \
+DETECTOR=hog \
+ROOM_ID=1 \
+GATEWAY_URL=http://localhost:8081/v1/events \
+python -m app.main
+```
+
+In the desktop client open `Камера`, set `Preview URL` to `http://localhost:8090`, and enter the same preview token if one was configured.
