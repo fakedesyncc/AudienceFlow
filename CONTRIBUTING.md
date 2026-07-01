@@ -2,7 +2,7 @@
 
 ## Ветки
 
-`main` — стабильная ветка. Из неё собирается GitHub Pages dashboard.
+`main` — стабильная ветка. Из неё собирается GitHub Pages-панель.
 
 Новая работа должна идти в отдельных ветках:
 
@@ -43,7 +43,7 @@ make test
 - `go test` для ingest gateway;
 - `mvn test` для Analytics API;
 - `py_compile` для vision worker;
-- production build React dashboard.
+- production build React-панели.
 
 Если менялся Dockerfile или Compose, дополнительно:
 

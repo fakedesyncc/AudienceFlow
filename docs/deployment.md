@@ -16,7 +16,7 @@
    docker compose up --build
    ```
 
-3. Открыть dashboard:
+3. Открыть панель:
 
    ```text
    http://localhost:3000
@@ -89,9 +89,9 @@ gh api -X POST repos/fakedesyncc/AudienceFlow/pages -f build_type=workflow
 
 ## Подключение реального API к Pages
 
-По умолчанию Pages dashboard открывает презентационный мониторинг без логинов и паролей. Это нужно потому, что GitHub Pages не запускает backend.
+По умолчанию Pages-панель открывает презентационный мониторинг без логинов и паролей. Это нужно потому, что GitHub Pages не запускает backend.
 
-Чтобы dashboard ходил в публичный API, можно прямо на экране входа выбрать `API` и ввести:
+Чтобы панель ходила в публичный API, можно прямо на экране входа выбрать `API` и ввести:
 
 - API URL;
 - email пользователя;
