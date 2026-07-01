@@ -241,63 +241,47 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <div className="service-line">
-          <span>ЛГТУ</span>
-          <span>AudienceFlow</span>
-          <span>{session.demo ? 'Презентационный контур' : 'API-контур'}</span>
-          <span className="service-line-right">
-            {lastSnapshotAt ? `Снимок ${formatClock(lastSnapshotAt)}` : 'Ожидание данных'}
-          </span>
-        </div>
-
-        <div className="main-header">
+      <aside className="app-sidebar">
+        <div className="sidebar-brand">
           <div className="brand">
             <div className="brand-mark">
               <Gauge size={22} />
             </div>
             <div>
               <strong>AudienceFlow</strong>
-              <span>{session.demo ? 'Мониторинг без рабочих секретов' : session.apiUrl}</span>
+              <span>ЛГТУ · мониторинг аудиторий</span>
             </div>
-          </div>
-
-          <nav className="nav-list" aria-label="Разделы системы">
-            {navigation.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  key={item.id}
-                  className={activeView === item.id ? 'nav-item active' : 'nav-item'}
-                  onClick={() => setActiveView(item.id)}
-                  title={item.label}
-                >
-                  <Icon size={18} />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </nav>
-
-          <div className="header-actions">
-            <RoleBadge role={session.user.role} />
-            <div className="profile-chip header-profile">
-              <UserRound size={17} />
-              <div>
-                <strong>{session.user.displayName}</strong>
-                <span>{roleLabels[session.user.role]}</span>
-              </div>
-            </div>
-            <button className="icon-button" onClick={handleLogout} title="Выйти">
-              <LogOut size={17} />
-            </button>
           </div>
         </div>
-      </header>
 
-      <main className="workspace">
+        <nav className="nav-list" aria-label="Разделы системы">
+          {navigation.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                className={activeView === item.id ? 'nav-item active' : 'nav-item'}
+                onClick={() => setActiveView(item.id)}
+                title={item.label}
+              >
+                <Icon size={18} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="sidebar-state">
+          <LiveBadge state={liveState} />
+          <span>{lastSnapshotAt ? `Снимок ${formatClock(lastSnapshotAt)}` : 'Ожидание данных'}</span>
+          <small>{session.demo ? 'Презентационный контур без рабочих секретов' : session.apiUrl}</small>
+        </div>
+      </aside>
+
+      <main className="app-main">
         <header className="topbar">
-          <div>
+          <div className="topbar-title">
+            <span>AudienceFlow · {session.demo ? 'презентационный контур' : 'API-контур'}</span>
             <h1>{viewTitle(activeView)}</h1>
             <p>
               {session.demo
@@ -306,59 +290,71 @@ export function App() {
             </p>
           </div>
           <div className="topbar-actions">
-            <LiveBadge state={liveState} />
+            <RoleBadge role={session.user.role} />
+            <div className="profile-chip header-profile">
+              <UserRound size={17} />
+              <div>
+                <strong>{session.user.displayName}</strong>
+                <span>{roleLabels[session.user.role]}</span>
+              </div>
+            </div>
             <button className="icon-button" onClick={() => void loadData()} title="Обновить">
               <RefreshCw size={18} className={loading ? 'spin' : ''} />
+            </button>
+            <button className="icon-button" onClick={handleLogout} title="Выйти">
+              <LogOut size={17} />
             </button>
           </div>
         </header>
 
-        {error && (
-          <div className="error-banner">
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>Закрыть</button>
-          </div>
-        )}
+        <section className="workspace">
+          {error && (
+            <div className="error-banner">
+              <span>{error}</span>
+              <button onClick={() => setError(null)}>Закрыть</button>
+            </div>
+          )}
 
-        {activeView === 'overview' && (
-          <Overview
-            current={current}
-            timeline={timeline}
-            rooms={rooms}
-            stats={panelStats}
-            selectedRoomId={selectedRoomId}
-            onSelectRoom={setSelectedRoomId}
-          />
-        )}
-        {activeView === 'monitoring' && (
-          <MonitoringView
-            current={current}
-            cameras={cameras}
-            stats={panelStats}
-            telemetry={telemetry}
-            liveState={liveState}
-            lastSnapshotAt={lastSnapshotAt}
-            selectedRoomId={selectedMonitoringRoomId}
-            buildingFilter={monitorBuilding}
-            statusFilter={monitorStatus}
-            onSelectRoom={setSelectedMonitoringRoomId}
-            onBuildingChange={setMonitorBuilding}
-            onStatusChange={setMonitorStatus}
-            onRefresh={loadData}
-          />
-        )}
-        {activeView === 'rooms' && (
-          <RoomsView rooms={rooms} canManage={Boolean(canManageInfrastructure)} onCreate={handleCreateRoom} />
-        )}
-        {activeView === 'cameras' && (
-          <CamerasView
-            cameras={cameras}
-            rooms={rooms}
-            canManage={Boolean(canManageInfrastructure)}
-            onCreate={handleCreateCamera}
-          />
-        )}
-        {activeView === 'users' && isAdmin && <UsersView users={users} onCreate={handleCreateUser} />}
+          {activeView === 'overview' && (
+            <Overview
+              current={current}
+              timeline={timeline}
+              rooms={rooms}
+              stats={panelStats}
+              selectedRoomId={selectedRoomId}
+              onSelectRoom={setSelectedRoomId}
+            />
+          )}
+          {activeView === 'monitoring' && (
+            <MonitoringView
+              current={current}
+              cameras={cameras}
+              stats={panelStats}
+              telemetry={telemetry}
+              liveState={liveState}
+              lastSnapshotAt={lastSnapshotAt}
+              selectedRoomId={selectedMonitoringRoomId}
+              buildingFilter={monitorBuilding}
+              statusFilter={monitorStatus}
+              onSelectRoom={setSelectedMonitoringRoomId}
+              onBuildingChange={setMonitorBuilding}
+              onStatusChange={setMonitorStatus}
+              onRefresh={loadData}
+            />
+          )}
+          {activeView === 'rooms' && (
+            <RoomsView rooms={rooms} canManage={Boolean(canManageInfrastructure)} onCreate={handleCreateRoom} />
+          )}
+          {activeView === 'cameras' && (
+            <CamerasView
+              cameras={cameras}
+              rooms={rooms}
+              canManage={Boolean(canManageInfrastructure)}
+              onCreate={handleCreateCamera}
+            />
+          )}
+          {activeView === 'users' && isAdmin && <UsersView users={users} onCreate={handleCreateUser} />}
+        </section>
       </main>
     </div>
   );
