@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package audienceflow.contracts;
+
+option go_package = "github.com/fakedesyncc/AudienceFlow/contracts;contracts";
+
+message AttendanceEvent {
+  int32 room_id = 1;
+  string ts = 2;
+  int32 count = 3;
+  float confidence = 4;
+  string worker_id = 5;
+}
+
+message IngestAck {
+  string status = 1;
+  string event_id = 2;
+}

@@ -1,0 +1,33 @@
+.DS_Store
+.env
+.env.local
+.idea/
+.vscode/
+
+# Logs and temporary files
+*.log
+tmp/
+coverage/
+
+# Node
+node_modules/
+dist/
+services/web/dist/
+
+# Java
+target/
+*.class
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Go
+bin/
+*.test
+
+# Runtime data
+pgdata/
+captures/
