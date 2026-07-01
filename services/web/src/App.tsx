@@ -12,6 +12,7 @@ import {
   Plus,
   RadioTower,
   RefreshCw,
+  Search,
   Server,
   ShieldCheck,
   UserRound,
@@ -91,6 +92,9 @@ export function App() {
   const [liveState, setLiveState] = useState<LiveState>('offline');
   const [lastSnapshotAt, setLastSnapshotAt] = useState<Date | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
+  const [selectedMonitoringRoomId, setSelectedMonitoringRoomId] = useState<number | null>(null);
+  const [monitorBuilding, setMonitorBuilding] = useState('all');
+  const [monitorStatus, setMonitorStatus] = useState<'all' | CurrentAttendance['status']>('all');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -165,7 +169,17 @@ export function App() {
     return () => socket.close();
   }, [session]);
 
-  const dashboardStats = useMemo(() => buildStats(current, cameras), [current, cameras]);
+  useEffect(() => {
+    if (current.length === 0) {
+      setSelectedMonitoringRoomId(null);
+      return;
+    }
+    if (selectedMonitoringRoomId === null || !current.some((item) => item.roomId === selectedMonitoringRoomId)) {
+      setSelectedMonitoringRoomId(current[0].roomId);
+    }
+  }, [current, selectedMonitoringRoomId]);
+
+  const panelStats = useMemo(() => buildStats(current, cameras), [current, cameras]);
 
   if (!session) {
     return (
@@ -178,11 +192,11 @@ export function App() {
   }
 
   const navigation = [
-    { id: 'monitoring' as View, label: 'Мониторинг', icon: RadioTower, enabled: true },
-    { id: 'overview' as View, label: 'Обзор', icon: Activity, enabled: true },
+    { id: 'monitoring' as View, label: 'Оперативно', icon: RadioTower, enabled: true },
+    { id: 'overview' as View, label: 'Аналитика', icon: Activity, enabled: true },
     { id: 'rooms' as View, label: 'Аудитории', icon: DoorOpen, enabled: true },
     { id: 'cameras' as View, label: 'Камеры', icon: Camera, enabled: true },
-    { id: 'users' as View, label: 'Пользователи', icon: Users, enabled: isAdmin },
+    { id: 'users' as View, label: 'Доступ', icon: Users, enabled: isAdmin },
   ].filter((item) => item.enabled);
 
   function handleLogout() {
@@ -227,57 +241,72 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">
-            <Gauge size={22} />
-          </div>
-          <div>
-            <strong>AudienceFlow</strong>
-            <span>{session.demo ? 'Презентационный режим' : session.apiUrl}</span>
-          </div>
+      <header className="app-header">
+        <div className="service-line">
+          <span>ЛГТУ</span>
+          <span>AudienceFlow</span>
+          <span>{session.demo ? 'Презентационный контур' : 'API-контур'}</span>
+          <span className="service-line-right">
+            {lastSnapshotAt ? `Снимок ${formatClock(lastSnapshotAt)}` : 'Ожидание данных'}
+          </span>
         </div>
 
-        <nav className="nav-list">
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                className={activeView === item.id ? 'nav-item active' : 'nav-item'}
-                onClick={() => setActiveView(item.id)}
-                title={item.label}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="sidebar-footer">
-          <div className="profile-chip">
-            <UserRound size={17} />
+        <div className="main-header">
+          <div className="brand">
+            <div className="brand-mark">
+              <Gauge size={22} />
+            </div>
             <div>
-              <strong>{session.user.displayName}</strong>
-              <span>{roleLabels[session.user.role]}</span>
+              <strong>AudienceFlow</strong>
+              <span>{session.demo ? 'Мониторинг без рабочих секретов' : session.apiUrl}</span>
             </div>
           </div>
-          <button className="icon-button wide" onClick={handleLogout} title="Выйти">
-            <LogOut size={17} />
-            <span>Выйти</span>
-          </button>
+
+          <nav className="nav-list" aria-label="Разделы системы">
+            {navigation.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  className={activeView === item.id ? 'nav-item active' : 'nav-item'}
+                  onClick={() => setActiveView(item.id)}
+                  title={item.label}
+                >
+                  <Icon size={18} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="header-actions">
+            <RoleBadge role={session.user.role} />
+            <div className="profile-chip header-profile">
+              <UserRound size={17} />
+              <div>
+                <strong>{session.user.displayName}</strong>
+                <span>{roleLabels[session.user.role]}</span>
+              </div>
+            </div>
+            <button className="icon-button" onClick={handleLogout} title="Выйти">
+              <LogOut size={17} />
+            </button>
+          </div>
         </div>
-      </aside>
+      </header>
 
       <main className="workspace">
         <header className="topbar">
           <div>
             <h1>{viewTitle(activeView)}</h1>
-            <p>{new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date())}</p>
+            <p>
+              {session.demo
+                ? 'Обезличенный поток для показа интерфейса. Рабочие учётные записи и токены не встроены.'
+                : new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date())}
+            </p>
           </div>
           <div className="topbar-actions">
-            <RoleBadge role={session.user.role} />
+            <LiveBadge state={liveState} />
             <button className="icon-button" onClick={() => void loadData()} title="Обновить">
               <RefreshCw size={18} className={loading ? 'spin' : ''} />
             </button>
@@ -296,7 +325,7 @@ export function App() {
             current={current}
             timeline={timeline}
             rooms={rooms}
-            stats={dashboardStats}
+            stats={panelStats}
             selectedRoomId={selectedRoomId}
             onSelectRoom={setSelectedRoomId}
           />
@@ -305,10 +334,16 @@ export function App() {
           <MonitoringView
             current={current}
             cameras={cameras}
-            stats={dashboardStats}
+            stats={panelStats}
             telemetry={telemetry}
             liveState={liveState}
             lastSnapshotAt={lastSnapshotAt}
+            selectedRoomId={selectedMonitoringRoomId}
+            buildingFilter={monitorBuilding}
+            statusFilter={monitorStatus}
+            onSelectRoom={setSelectedMonitoringRoomId}
+            onBuildingChange={setMonitorBuilding}
+            onStatusChange={setMonitorStatus}
             onRefresh={loadData}
           />
         )}
@@ -458,7 +493,6 @@ function LoginScreen({
               </button>
             </>
           )}
-
         </form>
       </section>
     </main>
@@ -472,6 +506,12 @@ function MonitoringView({
   telemetry,
   liveState,
   lastSnapshotAt,
+  selectedRoomId,
+  buildingFilter,
+  statusFilter,
+  onSelectRoom,
+  onBuildingChange,
+  onStatusChange,
   onRefresh,
 }: {
   current: CurrentAttendance[];
@@ -480,83 +520,192 @@ function MonitoringView({
   telemetry: TelemetryEvent[];
   liveState: LiveState;
   lastSnapshotAt: Date | null;
+  selectedRoomId: number | null;
+  buildingFilter: string;
+  statusFilter: 'all' | CurrentAttendance['status'];
+  onSelectRoom: (roomId: number) => void;
+  onBuildingChange: (building: string) => void;
+  onStatusChange: (status: 'all' | CurrentAttendance['status']) => void;
   onRefresh: () => Promise<void>;
 }) {
-  const busiest = [...current].sort((left, right) => right.occupancyPercent - left.occupancyPercent)[0];
+  const buildings = Array.from(new Set(current.map((item) => item.building))).sort((left, right) =>
+    left.localeCompare(right, 'ru'),
+  );
+  const filteredRooms = current.filter((item) => {
+    const buildingMatch = buildingFilter === 'all' || item.building === buildingFilter;
+    const statusMatch = statusFilter === 'all' || item.status === statusFilter;
+    return buildingMatch && statusMatch;
+  });
+  const selectedRoom =
+    current.find((item) => item.roomId === selectedRoomId) ?? filteredRooms[0] ?? current[0] ?? null;
+  const selectedCamera = selectedRoom ? cameras.find((camera) => camera.roomId === selectedRoom.roomId) : null;
+  const busiest = [...current].sort((left, right) => right.occupancyPercent - left.occupancyPercent)[0] ?? null;
   const maintenanceCount = cameras.filter((camera) => camera.status === 'maintenance').length;
+  const attentionCount = current.filter((item) => item.status !== 'normal').length;
+  const onlineCount = cameras.filter((camera) => camera.status === 'online').length;
 
   return (
-    <div className="monitoring-layout">
-      <section className="monitor-hero">
-        <div>
-          <span className="system-eyebrow">Липецкий государственный технический университет</span>
-          <h2>Оперативный мониторинг аудиторного фонда</h2>
-          <p>
-            Live-картина по корпусам, аудиториям и камерам. Данные обновляются автоматически; при недоступном
-            WebSocket используется резервный polling.
-          </p>
+    <div className="ops-console">
+      <section className="ops-statusbar">
+        <div className="ops-title">
+          <span>Липецкий государственный технический университет</span>
+          <h2>Оперативный центр посещаемости</h2>
         </div>
-        <div className="signal-board">
+        <div className="ops-signal-group">
           <LiveBadge state={liveState} />
           <div className="signal-time">
             <Clock3 size={18} />
             <span>{lastSnapshotAt ? formatClock(lastSnapshotAt) : 'ожидание данных'}</span>
           </div>
-          <button className="icon-button wide-light" onClick={() => void onRefresh()} title="Запросить свежий снимок">
+          <button className="icon-button" onClick={() => void onRefresh()} title="Запросить свежий снимок">
             <RefreshCw size={17} />
-            <span>Обновить</span>
           </button>
         </div>
       </section>
 
-      <section className="monitor-strip">
+      <section className="ops-kpis">
         <Metric icon={<DoorOpen size={20} />} label="Аудиторий в контуре" value={stats.rooms} accent="teal" />
         <Metric icon={<Users size={20} />} label="Людей сейчас" value={stats.totalPeople} accent="blue" />
-        <Metric icon={<Activity size={20} />} label="Средняя загрузка" value={`${stats.averageOccupancy}%`} accent="violet" />
-        <Metric icon={<Wrench size={20} />} label="Камер на обслуживании" value={maintenanceCount} accent="amber" />
+        <Metric icon={<Activity size={20} />} label="Требуют внимания" value={attentionCount} accent="violet" />
+        <Metric icon={<Wrench size={20} />} label="Камер онлайн / сервис" value={`${onlineCount}/${maintenanceCount}`} accent="amber" />
       </section>
 
-      <section className="monitor-grid">
-        <div className="panel live-map-panel">
-          <div className="panel-header">
+      <section className="ops-workspace">
+        <div className="panel ops-board">
+          <div className="panel-header ops-board-header">
             <div>
-              <h2>Карта занятости</h2>
-              <span>{busiest ? `Максимальная загрузка: ${busiest.roomName}` : 'Нет активных измерений'}</span>
+              <h2>Аудиторный фонд в реальном времени</h2>
+              <span>{busiest ? `Пиковая загрузка сейчас: ${busiest.roomName}` : 'Нет активных измерений'}</span>
             </div>
-            <MapPin size={20} />
+            <div className="ops-filters">
+              <label>
+                <span>Корпус</span>
+                <select value={buildingFilter} onChange={(event) => onBuildingChange(event.target.value)}>
+                  <option value="all">Все корпуса</option>
+                  {buildings.map((building) => (
+                    <option key={building} value={building}>
+                      {building}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Статус</span>
+                <select
+                  value={statusFilter}
+                  onChange={(event) => onStatusChange(event.target.value as 'all' | CurrentAttendance['status'])}
+                >
+                  <option value="all">Все статусы</option>
+                  <option value="normal">Норма</option>
+                  <option value="warning">Высокая загрузка</option>
+                  <option value="full">Переполнение</option>
+                </select>
+              </label>
+            </div>
           </div>
-          <div className="live-room-grid">
-            {current.map((item) => (
-              <LiveRoomTile key={item.roomId} item={item} />
-            ))}
+
+          <div className="room-state-table-wrap">
+            <table className="room-state-table">
+              <thead>
+                <tr>
+                  <th>Аудитория</th>
+                  <th>Корпус</th>
+                  <th>Люди</th>
+                  <th>Загрузка</th>
+                  <th>Сигнал</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRooms.map((item) => (
+                  <tr className={item.roomId === selectedRoom?.roomId ? 'selected' : ''} key={item.roomId}>
+                    <td>
+                      <button className="room-link" onClick={() => onSelectRoom(item.roomId)}>
+                        <MapPin size={16} />
+                        <span>{item.roomName}</span>
+                      </button>
+                    </td>
+                    <td>
+                      <span className="muted-text">
+                        {item.building}, этаж {item.floor}
+                      </span>
+                    </td>
+                    <td>
+                      <strong>
+                        {item.count}/{item.capacity}
+                      </strong>
+                    </td>
+                    <td>
+                      <div className="occupancy-cell">
+                        <div className="progress-track">
+                          <div className={`progress-fill ${item.status}`} style={{ width: `${Math.min(100, item.occupancyPercent)}%` }} />
+                        </div>
+                        <span>{item.occupancyPercent}%</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`room-status ${item.status}`}>{statusLabel(item.status)}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filteredRooms.length === 0 && (
+              <div className="empty-feed">
+                <Search size={18} />
+                <span>По выбранным фильтрам нет аудиторий.</span>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="panel live-camera-panel">
+        <aside className="panel room-inspector">
           <div className="panel-header">
             <div>
-              <h2>Камеры и каналы</h2>
-              <span>Текущее состояние источников</span>
+              <h2>{selectedRoom ? selectedRoom.roomName : 'Аудитория не выбрана'}</h2>
+              <span>{selectedRoom ? `${selectedRoom.building}, этаж ${selectedRoom.floor}` : 'Выберите строку в таблице'}</span>
             </div>
             <Server size={20} />
           </div>
-          <div className="monitor-camera-stack">
-            {cameras.map((camera) => (
-              <article className="monitor-camera" key={camera.id}>
-                <div className={camera.status === 'online' ? 'camera-dot online' : 'camera-dot'}>
-                  {camera.status === 'online' ? <Wifi size={16} /> : <WifiOff size={16} />}
+          {selectedRoom ? (
+            <>
+              <div className="inspector-count">
+                <strong>{selectedRoom.count}</strong>
+                <span>из {selectedRoom.capacity} мест</span>
+              </div>
+              <div className="progress-track inspector-progress">
+                <div className={`progress-fill ${selectedRoom.status}`} style={{ width: `${Math.min(100, selectedRoom.occupancyPercent)}%` }} />
+              </div>
+              <dl className="inspector-list">
+                <div>
+                  <dt>Заполненность</dt>
+                  <dd>{selectedRoom.occupancyPercent}%</dd>
                 </div>
                 <div>
-                  <strong>{camera.name}</strong>
-                  <span>{camera.roomName}</span>
+                  <dt>Достоверность</dt>
+                  <dd>{Math.round(selectedRoom.confidence * 100)}%</dd>
                 </div>
-                <StatusBadge status={camera.status} />
-              </article>
-            ))}
-          </div>
-        </div>
+                <div>
+                  <dt>Последнее измерение</dt>
+                  <dd>{selectedRoom.timestamp ? formatClock(new Date(selectedRoom.timestamp)) : 'нет сигнала'}</dd>
+                </div>
+              </dl>
+              <div className="camera-inspector">
+                <div className={selectedCamera?.status === 'online' ? 'camera-dot online' : 'camera-dot'}>
+                  {selectedCamera?.status === 'online' ? <Wifi size={16} /> : <WifiOff size={16} />}
+                </div>
+                <div>
+                  <strong>{selectedCamera?.name ?? 'Камера не назначена'}</strong>
+                  <span>{selectedCamera ? streamLabel(selectedCamera.streamType) : 'Добавляется в разделе камер'}</span>
+                </div>
+                {selectedCamera && <StatusBadge status={selectedCamera.status} />}
+              </div>
+            </>
+          ) : (
+            <div className="empty-feed">Нет данных для выбранного контура.</div>
+          )}
+        </aside>
 
-        <div className="panel live-feed-panel">
+        <div className="panel ops-feed-panel">
           <div className="panel-header">
             <div>
               <h2>Лента событий</h2>
@@ -807,7 +956,7 @@ function CamerasView({
               <div>
                 <strong>{camera.name}</strong>
                 <span>{camera.roomName}</span>
-                <code>{camera.sourceUrl ?? 'source hidden'}</code>
+                <code>{camera.sourceUrl ?? 'источник скрыт'}</code>
               </div>
               <StatusBadge status={camera.status} />
             </article>
@@ -1025,29 +1174,6 @@ function OccupancyCard({ item }: { item: CurrentAttendance }) {
   );
 }
 
-function LiveRoomTile({ item }: { item: CurrentAttendance }) {
-  return (
-    <article className={`live-room-tile ${item.status}`}>
-      <div className="live-room-top">
-        <div>
-          <strong>{item.roomName}</strong>
-          <span>
-            {item.building}, этаж {item.floor}
-          </span>
-        </div>
-        <span className="live-room-count">{item.count}</span>
-      </div>
-      <div className="live-room-scale">
-        <div style={{ width: `${Math.min(100, item.occupancyPercent)}%` }} />
-      </div>
-      <div className="live-room-meta">
-        <span>{item.occupancyPercent}% занято</span>
-        <span>{item.timestamp ? formatClock(new Date(item.timestamp)) : 'нет сигнала'}</span>
-      </div>
-    </article>
-  );
-}
-
 function Metric({ icon, label, value, accent }: { icon: ReactNode; label: string; value: ReactNode; accent: string }) {
   return (
     <article className={`metric ${accent}`}>
@@ -1070,7 +1196,12 @@ function RoleBadge({ role, compact = false }: { role: Role; compact?: boolean })
 }
 
 function StatusBadge({ status }: { status: CameraType['status'] }) {
-  return <span className={`status-badge ${status}`}>{status}</span>;
+  const labels: Record<CameraType['status'], string> = {
+    online: 'онлайн',
+    offline: 'нет связи',
+    maintenance: 'сервис',
+  };
+  return <span className={`status-badge ${status}`}>{labels[status]}</span>;
 }
 
 function LiveBadge({ state }: { state: LiveState }) {
@@ -1108,6 +1239,25 @@ function buildStats(current: CurrentAttendance[], cameras: CameraType[]): Dashbo
   };
 }
 
+function statusLabel(status: CurrentAttendance['status']): string {
+  const labels: Record<CurrentAttendance['status'], string> = {
+    normal: 'норма',
+    warning: 'высокая',
+    full: 'критично',
+  };
+  return labels[status];
+}
+
+function streamLabel(streamType: CameraType['streamType']): string {
+  const labels: Record<CameraType['streamType'], string> = {
+    rtsp: 'RTSP-поток',
+    http: 'HTTP-поток',
+    device: 'камера устройства',
+    simulation: 'симулятор',
+  };
+  return labels[streamType];
+}
+
 function buildTelemetryEvents(
   items: CurrentAttendance[],
   receivedAt: Date,
@@ -1134,15 +1284,15 @@ function buildTelemetryEvents(
 function viewTitle(view: View): string {
   switch (view) {
     case 'monitoring':
-      return 'Мониторинг';
+      return 'Центр мониторинга';
     case 'rooms':
-      return 'Аудитории';
+      return 'Аудиторный фонд';
     case 'cameras':
       return 'Камеры';
     case 'users':
-      return 'Пользователи';
+      return 'Доступ';
     default:
-      return 'Обзор';
+      return 'Аналитика';
   }
 }
 

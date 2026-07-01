@@ -51,7 +51,7 @@ public class UserSeeder implements ApplicationRunner {
             throw new IllegalStateException(user.role() + " seed email and password are required");
         }
         if ("admin".equalsIgnoreCase(user.email()) || "admin".equals(user.password())) {
-            throw new IllegalStateException("Default admin/admin style credentials are not allowed");
+            throw new IllegalStateException("Default weak bootstrap credentials are not allowed");
         }
         if (user.password().length() < 12) {
             throw new IllegalStateException(user.role() + " seed password must be at least 12 characters");
