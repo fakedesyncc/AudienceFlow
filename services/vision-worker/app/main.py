@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import math
 import os
@@ -19,6 +20,8 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 DEFAULT_SAMPLE_VIDEO_URL = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/people-detection.mp4"
 
@@ -156,6 +159,8 @@ class Config:
             raise ValueError("SOURCE_RECONNECT_SECONDS must be positive")
         if self.source_read_failure_limit < 1:
             raise ValueError("SOURCE_READ_FAILURE_LIMIT must be positive")
+        if self.preview_enabled:
+            parse_preview_addr(self.preview_addr)
 
 
 @dataclass(frozen=True)
@@ -473,7 +478,7 @@ class PreviewServer:
             return True
         parsed = urlparse(path)
         token = headers.get("X-Preview-Token") or parse_qs(parsed.query).get("token", [""])[0]
-        return token == self.cfg.preview_token
+        return hmac.compare_digest(token or "", self.cfg.preview_token)
 
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         preview = self
@@ -607,6 +612,20 @@ class GatewayClient:
             "Content-Type": "application/json",
             "X-Ingest-Key": cfg.ingest_api_key,
         })
+        # Bounded exponential-backoff retry with jitter so a brief gateway blip
+        # doesn't drop the interval's event. Keep the total capped well under the
+        # send interval to avoid stacking sends.
+        retry = Retry(
+            total=2,
+            backoff_factor=0.3,
+            backoff_jitter=0.2,
+            status_forcelist=(500, 502, 503, 504),
+            allowed_methods=frozenset({"POST"}),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
 
     def send(self, count: int, confidence: float) -> None:
         payload = {
@@ -701,11 +720,18 @@ def run_camera_loop(
         "loop": source.loop,
     }, ensure_ascii=False), flush=True)
 
+    if source.is_live:
+        configure_live_ffmpeg_options(source)
+
     last_sent = 0.0
     last_frame_at = time.monotonic()
     while True:
         capture = cv2.VideoCapture(source.capture_source)
+        if source.is_live:
+            apply_live_capture_timeouts(cv2, capture)
         if not capture.isOpened():
+            if preview:
+                preview.merge_state({"ready": False, "stale": True})
             print(json.dumps({
                 "event": "source_open_failed",
                 "kind": source.kind,
@@ -742,6 +768,8 @@ def run_camera_loop(
                 time.sleep(0.25)
                 continue
 
+            if read_failures and preview:
+                preview.merge_state({"ready": True, "stale": False})
             read_failures = 0
 
             result = detector.detect(frame)
@@ -761,6 +789,8 @@ def run_camera_loop(
                 safe_send(gateway, stable_count, stable_confidence)
                 last_sent = now
         capture.release()
+        if preview:
+            preview.merge_state({"ready": False, "stale": True})
         print(json.dumps({
             "event": "source_reconnect",
             "kind": source.kind,
@@ -768,6 +798,39 @@ def run_camera_loop(
             "retry_seconds": cfg.source_reconnect_seconds,
         }, ensure_ascii=False), file=sys.stderr, flush=True)
         time.sleep(cfg.source_reconnect_seconds)
+
+
+def configure_live_ffmpeg_options(source: VideoSource) -> None:
+    """Set FFmpeg capture options so opens/reads on a live source time out instead
+    of blocking forever, letting the reconnect logic engage on a stalled stream.
+
+    Only applied to live kinds (rtsp/mjpeg/http/phone/device); files and the sample
+    video are left untouched. Uses setdefault so an operator-provided override wins.
+    """
+    if source.kind == "rtsp":
+        # 5s socket timeout (microseconds), prefer TCP transport.
+        os.environ.setdefault(
+            "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+            "rtsp_transport;tcp|stimeout;5000000",
+        )
+    else:
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "timeout;5000000")
+
+
+def apply_live_capture_timeouts(cv2: Any, capture: Any) -> None:
+    """Apply open/read timeouts on a VideoCapture for live sources when the
+    OpenCV build exposes them (older builds lack these constants)."""
+    for attr, milliseconds in (
+        ("CAP_PROP_OPEN_TIMEOUT_MSEC", 5000),
+        ("CAP_PROP_READ_TIMEOUT_MSEC", 5000),
+    ):
+        prop = getattr(cv2, attr, None)
+        if prop is None:
+            continue
+        try:
+            capture.set(prop, milliseconds)
+        except Exception:
+            continue
 
 
 def safe_send(gateway: GatewayClient, count: int, confidence: float) -> None:
@@ -1231,12 +1294,27 @@ def safe_source_label(value: str) -> str:
 
 
 def parse_preview_addr(value: str) -> tuple[str, int]:
+    value = value.strip()
     if value.isdigit():
         return "127.0.0.1", int(value)
     if value.startswith(":"):
-        return "0.0.0.0", int(value[1:])
+        return "0.0.0.0", _parse_preview_port(value[1:])
+    if value.startswith("["):
+        host, sep, rest = value[1:].partition("]")
+        if not sep or not rest.startswith(":"):
+            raise ValueError("PREVIEW_ADDR must be host:port")
+        return host, _parse_preview_port(rest[1:])
+    if ":" not in value:
+        raise ValueError("PREVIEW_ADDR must be host:port")
     host, port = value.rsplit(":", 1)
-    return host, int(port)
+    return host, _parse_preview_port(port)
+
+
+def _parse_preview_port(port: str) -> int:
+    port = port.strip()
+    if not port.isdigit():
+        raise ValueError("PREVIEW_ADDR must be host:port")
+    return int(port)
 
 
 def parse_line_config(value: str) -> tuple[int, int, int, int] | None:

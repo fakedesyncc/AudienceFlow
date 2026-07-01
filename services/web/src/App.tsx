@@ -5,7 +5,6 @@ import {
   Clock3,
   DoorOpen,
   Eye,
-  Gauge,
   KeyRound,
   LogOut,
   MapPin,
@@ -49,6 +48,7 @@ import {
   saveRuntimeConfig,
   updateCamera,
 } from './api';
+import { normalizePreviewUrl, restoreSession, sessionStorageKey } from './session';
 import type {
   AuthSession,
   Camera as CameraType,
@@ -84,7 +84,6 @@ interface PreviewState {
   updated_at: string | null;
 }
 
-const sessionStorageKey = 'audienceflow.session';
 const roleLabels: Record<Role, string> = {
   ADMIN: 'Администратор',
   TECHNICIAN: 'Техник',
@@ -122,6 +121,8 @@ export function App() {
   const [monitorStatus, setMonitorStatus] = useState<'all' | CurrentAttendance['status']>('all');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const liveSocketRef = useRef<WebSocket | null>(null);
+  const liveConnectedRef = useRef(false);
 
   const canManageInfrastructure = session?.user.role === 'ADMIN' || session?.user.role === 'TECHNICIAN';
   const isAdmin = session?.user.role === 'ADMIN';
@@ -138,7 +139,10 @@ export function App() {
         fetchRooms(session),
         fetchCameras(session),
       ]);
-      applySnapshot(currentData, session.demo ? 'presentation' : 'polling');
+      // While a live WebSocket owns `current`, don't let the polling fallback overwrite it.
+      if (!liveConnectedRef.current) {
+        applySnapshot(currentData, session.demo ? 'presentation' : 'polling');
+      }
       setRooms(roomData);
       setCameras(cameraData);
       if (session.user.role === 'ADMIN') {
@@ -180,18 +184,64 @@ export function App() {
     if (!url) {
       return;
     }
-    const socket = new WebSocket(url);
-    socket.onopen = () => setLiveState('live');
-    socket.onmessage = (event) => {
-      const message = parseLiveMessage(event.data);
-      applySnapshot(message.rooms, 'live');
+    let mounted = true;
+    let attempt = 0;
+    let reconnectTimer: number | undefined;
+
+    const connect = () => {
+      if (!mounted) {
+        return;
+      }
+      const socket = new WebSocket(url);
+      liveSocketRef.current = socket;
+      socket.onopen = () => {
+        attempt = 0;
+        liveConnectedRef.current = true;
+        setLiveState('live');
+      };
+      socket.onmessage = (event) => {
+        const message = parseLiveMessage(event.data);
+        if (!message) {
+          return; // ignore malformed frames instead of crashing the render
+        }
+        applySnapshot(message.rooms, 'live');
+      };
+      socket.onerror = () => {
+        socket.close();
+      };
+      socket.onclose = () => {
+        const wasConnected = liveConnectedRef.current;
+        liveConnectedRef.current = false;
+        liveSocketRef.current = null;
+        if (!mounted) {
+          return;
+        }
+        setLiveState('polling');
+        if (wasConnected) {
+          setError('Live-подключение прервано, включён резервный polling');
+        }
+        // Reconnect with capped exponential backoff + jitter.
+        const delay = Math.min(30000, 1000 * 2 ** attempt) + Math.random() * 1000;
+        attempt += 1;
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
     };
-    socket.onerror = () => {
-      setLiveState('polling');
-      setError('Live-подключение временно недоступно, включён резервный polling');
+
+    connect();
+
+    return () => {
+      mounted = false;
+      liveConnectedRef.current = false;
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer);
+      }
+      const socket = liveSocketRef.current;
+      liveSocketRef.current = null;
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      }
     };
-    socket.onclose = () => setLiveState('polling');
-    return () => socket.close();
   }, [session]);
 
   useEffect(() => {
@@ -280,10 +330,11 @@ export function App() {
         <div className="sidebar-brand">
           <div className="brand">
             <div className="brand-mark">
-              <Gauge size={22} />
+              <img src={`${import.meta.env.BASE_URL}brand/aula-mark.svg`} alt="AULA" />
             </div>
             <div>
-              <strong>AudienceFlow</strong>
+              <strong>AULA</strong>
+              <span className="brand-signature">by AudienceFlow</span>
               <span>ЛГТУ · мониторинг аудиторий</span>
             </div>
           </div>
@@ -316,7 +367,7 @@ export function App() {
       <main className="app-main">
         <header className="topbar">
           <div className="topbar-title">
-            <span>AudienceFlow · {session.demo ? 'презентационный контур' : 'API-контур'}</span>
+            <span>AULA · {session.demo ? 'презентационный контур' : 'API-контур'}</span>
             <h1>{viewTitle(activeView)}</h1>
             <p>
               {session.demo
@@ -444,17 +495,39 @@ function LoginScreen({
   return (
     <main className="login-screen">
       <section className="login-panel">
-        <div className="brand login-brand">
-          <div className="brand-mark">
-            <Gauge size={26} />
+        <aside className="login-showcase">
+          <div className="brand login-showcase-brand">
+            <div className="brand-mark">
+              <img src={`${import.meta.env.BASE_URL}brand/aula-mark-inverse.svg`} alt="AULA" />
+            </div>
+            <div>
+              <strong>AULA</strong>
+              <span className="brand-signature">by AudienceFlow</span>
+            </div>
           </div>
-          <div>
-            <strong>AudienceFlow</strong>
-            <span>{draftConfig.mode === 'demo' ? 'Презентационный мониторинг' : 'Защищённый вход'}</span>
+          <div className="login-showcase-copy">
+            <h2>Система видеоаналитики посещаемости</h2>
+            <p>Живая картина аудиторий, камер и загрузки — спокойно, точно и в реальном времени.</p>
           </div>
-        </div>
+          <div className="login-showcase-tags">
+            <span>Real-time</span>
+            <span>Камеры без магии</span>
+            <span>ЛГТУ · ИКН</span>
+          </div>
+        </aside>
 
-        <form onSubmit={submit} className="login-form">
+        <div className="login-form-pane">
+          <div className="brand login-brand">
+            <div className="brand-mark">
+              <img src={`${import.meta.env.BASE_URL}brand/aula-mark.svg`} alt="AULA" />
+            </div>
+            <div>
+              <strong>AULA</strong>
+              <span>{draftConfig.mode === 'demo' ? 'Презентационный мониторинг' : 'Защищённый вход'}</span>
+            </div>
+          </div>
+
+          <form onSubmit={submit} className="login-form">
           <div className="mode-switch" role="group" aria-label="Режим подключения">
             <button
               type="button"
@@ -526,7 +599,8 @@ function LoginScreen({
               </button>
             </>
           )}
-        </form>
+          </form>
+        </div>
       </section>
     </main>
   );
@@ -686,6 +760,16 @@ function MonitoringView({
               <div className="empty-feed">
                 <Search size={18} />
                 <span>По выбранным фильтрам нет аудиторий.</span>
+                <button
+                  type="button"
+                  className="empty-hint"
+                  onClick={() => {
+                    onBuildingChange('all');
+                    onStatusChange('all');
+                  }}
+                >
+                  Сбросить фильтры
+                </button>
               </div>
             )}
           </div>
@@ -734,7 +818,13 @@ function MonitoringView({
               </div>
             </>
           ) : (
-            <div className="empty-feed">Нет данных для выбранного контура.</div>
+            <div className="empty-feed">
+              <Server size={18} />
+              <span>Нет данных для выбранного контура.</span>
+              <button type="button" className="empty-hint" onClick={() => void onRefresh()}>
+                Запросить снимок
+              </button>
+            </div>
           )}
         </aside>
 
@@ -748,7 +838,13 @@ function MonitoringView({
           </div>
           <div className="telemetry-feed">
             {telemetry.length === 0 ? (
-              <div className="empty-feed">Ожидание первого снимка.</div>
+              <div className="empty-feed">
+                <RadioTower size={18} />
+                <span>Ожидание первого снимка.</span>
+                <button type="button" className="empty-hint" onClick={() => void onRefresh()}>
+                  Обновить сейчас
+                </button>
+              </div>
             ) : (
               telemetry.map((event) => (
                 <article className={`telemetry-event ${event.status}`} key={event.id}>
@@ -820,16 +916,16 @@ function Overview({
             <AreaChart data={chartData} margin={{ top: 8, right: 16, left: -20, bottom: 4 }}>
               <defs>
                 <linearGradient id="avgGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#0f9f8f" stopOpacity={0.35} />
-                  <stop offset="95%" stopColor="#0f9f8f" stopOpacity={0.04} />
+                  <stop offset="5%" stopColor="#D2691E" stopOpacity={0.35} />
+                  <stop offset="95%" stopColor="#D2691E" stopOpacity={0.04} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#d8dee7" />
-              <XAxis dataKey="time" tick={{ fontSize: 12 }} minTickGap={24} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #d8dee7' }} />
-              <Area type="monotone" dataKey="avg" stroke="#0f9f8f" fill="url(#avgGradient)" strokeWidth={2} />
-              <Area type="monotone" dataKey="peak" stroke="#4568dc" fill="transparent" strokeWidth={2} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#E7DFD6" />
+              <XAxis dataKey="time" tick={{ fontSize: 12, fill: '#6F6259' }} minTickGap={24} />
+              <YAxis tick={{ fontSize: 12, fill: '#6F6259' }} />
+              <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #E7DFD6' }} />
+              <Area type="monotone" dataKey="avg" stroke="#D2691E" fill="url(#avgGradient)" strokeWidth={2} />
+              <Area type="monotone" dataKey="peak" stroke="#2F6F7A" fill="transparent" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -1247,7 +1343,7 @@ function MobileView() {
             <RadioTower size={20} />
           </div>
           <div className="preview-phone-frame">
-            <img src={streamSrc} alt="AudienceFlow preview stream" />
+            <img src={streamSrc} alt="AULA preview stream" />
           </div>
           <div className="stacked-form">
             <label>
@@ -1564,31 +1660,6 @@ function formatTime(value: string): string {
 
 function formatClock(value: Date): string {
   return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(value);
-}
-
-function normalizePreviewUrl(value: string): string {
-  const trimmed = value.trim();
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-  return withScheme.replace(/\/$/, '');
-}
-
-function restoreSession(): AuthSession | null {
-  localStorage.removeItem(sessionStorageKey);
-  const raw = window.sessionStorage.getItem(sessionStorageKey);
-  if (!raw) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw) as AuthSession;
-    if (!parsed.token || !parsed.user || (!parsed.demo && !parsed.apiUrl)) {
-      window.sessionStorage.removeItem(sessionStorageKey);
-      return null;
-    }
-    return parsed.demo ? { ...parsed, apiUrl: null } : parsed;
-  } catch {
-    window.sessionStorage.removeItem(sessionStorageKey);
-    return null;
-  }
 }
 
 function generatePassword(): string {

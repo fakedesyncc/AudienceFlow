@@ -32,6 +32,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -95,10 +96,16 @@ public final class AudienceFlowDesktopApplication extends Application {
     private final ObservableList<TimelinePoint> reportRows = FXCollections.observableArrayList();
     private final ObservableList<String> eventFeed = FXCollections.observableArrayList();
 
+    private static final long RECONNECT_BASE_DELAY_MILLIS = 1_000;
+    private static final long RECONNECT_MAX_DELAY_MILLIS = 30_000;
+
     private Stage stage;
     private AuthSession session;
+    private long sessionEpoch;
     private ScheduledExecutorService refreshExecutor;
     private ScheduledExecutorService previewExecutor;
+    private ScheduledExecutorService reconnectExecutor;
+    private int reconnectAttempts;
     private LiveConnection liveConnection;
     private PreviewClient previewClient;
     private byte[] latestPreviewFrame;
@@ -151,10 +158,22 @@ public final class AudienceFlowDesktopApplication extends Application {
     @Override
     public void start(Stage primaryStage) {
         stage = primaryStage;
-        stage.setTitle("AudienceFlow");
+        stage.setTitle("AULA");
+        applyWindowIcon(stage);
         stage.setMinWidth(920);
         stage.setMinHeight(640);
         showLogin();
+    }
+
+    private void applyWindowIcon(Stage target) {
+        if (!target.getIcons().isEmpty()) {
+            return;
+        }
+        java.io.InputStream iconStream = AudienceFlowDesktopApplication.class
+                .getResourceAsStream("/io/audienceflow/desktop/brand/aula-icon-256.png");
+        if (iconStream != null) {
+            target.getIcons().add(new Image(iconStream));
+        }
     }
 
     @Override
@@ -166,6 +185,7 @@ public final class AudienceFlowDesktopApplication extends Application {
         stopBackgroundWork();
         apiClient.clearSession();
         session = null;
+        sessionEpoch++;
 
         TextField apiUrl = new TextField("http://localhost:8080/api");
         TextField email = new TextField();
@@ -195,7 +215,9 @@ public final class AudienceFlowDesktopApplication extends Application {
 
         submit.setDefaultButton(true);
 
-        HBox showcaseBrand = new HBox(14, icon(Name.MARK, 38, 24, "brand-icon", "on-dark"), label("AudienceFlow", "showcase-title"));
+        VBox showcaseWordmark = new VBox(2, label("AULA", "showcase-title"), label("by AudienceFlow", "showcase-signature"));
+        showcaseWordmark.setAlignment(Pos.CENTER_LEFT);
+        HBox showcaseBrand = new HBox(14, icon(Name.MARK, 38, 24, "brand-icon", "on-dark"), showcaseWordmark);
         showcaseBrand.setAlignment(Pos.CENTER_LEFT);
 
         VBox showcase = new VBox(22);
@@ -245,6 +267,7 @@ public final class AudienceFlowDesktopApplication extends Application {
 
     private void showMain(AuthSession authSession) {
         session = authSession;
+        sessionEpoch++;
 
         BorderPane root = new BorderPane();
         root.getStyleClass().add("app-root");
@@ -255,15 +278,18 @@ public final class AudienceFlowDesktopApplication extends Application {
         Scene scene = new Scene(root, 1280, 820);
         attachStyles(scene);
         stage.setScene(scene);
-        stage.setTitle("AudienceFlow - " + authSession.user().displayName());
+        stage.setTitle("AULA — " + authSession.user().displayName());
+        applyWindowIcon(stage);
 
         refreshData(true);
-        openLiveConnection();
         startPolling();
+        openLiveConnection();
     }
 
     private Node buildSidebar() {
-        HBox brand = new HBox(12, icon(Name.MARK, 34, 22, "brand-icon"), label("AudienceFlow", "sidebar-title"));
+        VBox brandWordmark = new VBox(1, label("AULA", "sidebar-title"), label("by AudienceFlow", "sidebar-signature"));
+        brandWordmark.setAlignment(Pos.CENTER_LEFT);
+        HBox brand = new HBox(12, icon(Name.MARK, 34, 22, "brand-icon"), brandWordmark);
         brand.setAlignment(Pos.CENTER_LEFT);
         Label caption = label("ЛГТУ · операторский контур", "sidebar-caption");
         userLabel = label("", "sidebar-user");
@@ -827,6 +853,7 @@ public final class AudienceFlowDesktopApplication extends Application {
         if (session == null) {
             return;
         }
+        long requestEpoch = sessionEpoch;
         if (manual) {
             showStatus("Запрашиваю свежий снимок", false);
         }
@@ -840,6 +867,9 @@ public final class AudienceFlowDesktopApplication extends Application {
 
         CompletableFuture.allOf(currentFuture, roomsFuture, camerasFuture, usersFuture)
                 .whenComplete((ignored, failure) -> Platform.runLater(() -> {
+                    if (session == null || requestEpoch != sessionEpoch) {
+                        return;
+                    }
                     if (failure != null) {
                         updateLiveState("polling");
                         showStatus(userMessage(failure), true);
@@ -855,30 +885,97 @@ public final class AudienceFlowDesktopApplication extends Application {
     }
 
     private void openLiveConnection() {
+        if (session == null) {
+            return;
+        }
+        long requestEpoch = sessionEpoch;
         apiClient.openLive(
-                snapshot -> Platform.runLater(() -> applySnapshot(snapshot, "live")),
-                state -> Platform.runLater(() -> updateLiveState(state))
+                snapshot -> Platform.runLater(() -> {
+                    if (session == null || requestEpoch != sessionEpoch) {
+                        return;
+                    }
+                    applySnapshot(snapshot, "live");
+                }),
+                state -> Platform.runLater(() -> {
+                    if (session == null || requestEpoch != sessionEpoch) {
+                        return;
+                    }
+                    updateLiveState(state);
+                    if ("live".equals(state)) {
+                        reconnectAttempts = 0;
+                    } else if ("polling".equals(state)) {
+                        scheduleLiveReconnect(requestEpoch);
+                    }
+                })
         ).whenComplete((connection, failure) -> Platform.runLater(() -> {
+            if (session == null || requestEpoch != sessionEpoch) {
+                if (connection != null) {
+                    connection.close();
+                }
+                return;
+            }
             if (failure != null) {
                 updateLiveState("polling");
                 appendFeed("Live-канал недоступен, используется polling");
+                scheduleLiveReconnect(requestEpoch);
                 return;
             }
             liveConnection = connection;
+            reconnectAttempts = 0;
             updateLiveState("live");
         }));
     }
 
+    private void scheduleLiveReconnect(long requestEpoch) {
+        if (session == null || requestEpoch != sessionEpoch || reconnectExecutor == null) {
+            return;
+        }
+        liveConnection = null;
+        int attempt = reconnectAttempts++;
+        long exponential = RECONNECT_BASE_DELAY_MILLIS * (1L << Math.min(attempt, 5));
+        long capped = Math.min(exponential, RECONNECT_MAX_DELAY_MILLIS);
+        long jitter = ThreadLocalRandom.current().nextLong(RECONNECT_BASE_DELAY_MILLIS);
+        long delay = Math.min(capped + jitter, RECONNECT_MAX_DELAY_MILLIS);
+        try {
+            reconnectExecutor.schedule(() -> Platform.runLater(() -> {
+                if (session == null || requestEpoch != sessionEpoch) {
+                    return;
+                }
+                openLiveConnection();
+            }), delay, TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            // executor was shut down during teardown; nothing to reconnect
+        }
+    }
+
     private void startPolling() {
+        reconnectExecutor = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "audienceflow-reconnect");
+            thread.setDaemon(true);
+            return thread;
+        });
+        reconnectAttempts = 0;
         refreshExecutor = Executors.newSingleThreadScheduledExecutor(task -> {
             Thread thread = new Thread(task, "audienceflow-refresh");
             thread.setDaemon(true);
             return thread;
         });
-        refreshExecutor.scheduleWithFixedDelay(() -> refreshData(false), 5, 5, TimeUnit.SECONDS);
+        refreshExecutor.scheduleWithFixedDelay(() -> {
+            try {
+                refreshData(false);
+            } catch (Throwable throwable) {
+                System.getLogger(AudienceFlowDesktopApplication.class.getName())
+                        .log(System.Logger.Level.WARNING, "Ошибка фонового обновления", throwable);
+            }
+        }, 5, 5, TimeUnit.SECONDS);
     }
 
     private void stopBackgroundWork() {
+        if (reconnectExecutor != null) {
+            reconnectExecutor.shutdownNow();
+            reconnectExecutor = null;
+        }
+        reconnectAttempts = 0;
         if (liveConnection != null) {
             liveConnection.close();
             liveConnection = null;
@@ -906,7 +1003,14 @@ public final class AudienceFlowDesktopApplication extends Application {
             thread.setDaemon(true);
             return thread;
         });
-        previewExecutor.scheduleWithFixedDelay(this::fetchPreviewFrame, 0, 180, TimeUnit.MILLISECONDS);
+        previewExecutor.scheduleWithFixedDelay(() -> {
+            try {
+                fetchPreviewFrame();
+            } catch (Throwable throwable) {
+                System.getLogger(AudienceFlowDesktopApplication.class.getName())
+                        .log(System.Logger.Level.WARNING, "Ошибка обновления preview", throwable);
+            }
+        }, 0, 180, TimeUnit.MILLISECONDS);
     }
 
     private void fetchPreviewFrame() {
@@ -1073,6 +1177,7 @@ public final class AudienceFlowDesktopApplication extends Application {
         if (session == null) {
             return;
         }
+        long requestEpoch = sessionEpoch;
         Room room = reportRoomCombo == null ? null : reportRoomCombo.getSelectionModel().getSelectedItem();
         if (room == null) {
             showStatus("Выберите аудиторию для отчёта", true);
@@ -1088,6 +1193,9 @@ public final class AudienceFlowDesktopApplication extends Application {
 
         CompletableFuture.allOf(summaryFuture, timelineFuture)
                 .whenComplete((ignored, failure) -> Platform.runLater(() -> {
+                    if (session == null || requestEpoch != sessionEpoch) {
+                        return;
+                    }
                     if (failure != null) {
                         showStatus(userMessage(failure), true);
                         return;
@@ -1136,7 +1244,7 @@ public final class AudienceFlowDesktopApplication extends Application {
 
     private String buildReportCsv() {
         StringBuilder csv = new StringBuilder("\uFEFF");
-        appendCsvRow(csv, "AudienceFlow report");
+        appendCsvRow(csv, "AULA report");
         appendCsvRow(csv, "room_id", String.valueOf(currentReportRoom.id()));
         appendCsvRow(csv, "room", currentReportRoom.name());
         appendCsvRow(csv, "building", currentReportRoom.building());
