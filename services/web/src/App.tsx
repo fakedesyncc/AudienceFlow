@@ -1043,13 +1043,13 @@ function UsersView({
     email: '',
     displayName: '',
     role: 'TEACHER',
-    password: generatePassword(),
+    password: '',
   });
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await onCreate(form);
-    setForm({ email: '', displayName: '', role: 'TEACHER', password: generatePassword() });
+    setForm({ email: '', displayName: '', role: 'TEACHER', password: '' });
   }
 
   return (
@@ -1122,7 +1122,8 @@ function UsersView({
               <input
                 value={form.password}
                 onChange={(event) => setForm({ ...form, password: event.target.value })}
-                minLength={12}
+                minLength={14}
+                autoComplete="new-password"
                 required
               />
               <button
@@ -1320,8 +1321,17 @@ function restoreSession(): AuthSession | null {
 }
 
 function generatePassword(): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%';
-  const values = new Uint32Array(18);
+  const groups = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%'];
+  const alphabet = groups.join('');
+  const values = new Uint32Array(24);
   crypto.getRandomValues(values);
-  return Array.from(values, (value) => alphabet[value % alphabet.length]).join('');
+  const chars = groups.map((group, index) => group[values[index] % group.length]);
+  for (let index = groups.length; index < values.length; index += 1) {
+    chars.push(alphabet[values[index] % alphabet.length]);
+  }
+  return chars
+    .map((char, index) => ({ char, rank: values[index] }))
+    .sort((left, right) => left.rank - right.rank)
+    .map((item) => item.char)
+    .join('');
 }

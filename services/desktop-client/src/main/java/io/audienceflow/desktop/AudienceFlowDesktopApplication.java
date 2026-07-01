@@ -738,7 +738,7 @@ public final class AudienceFlowDesktopApplication extends Application {
         role.getSelectionModel().select(Role.TEACHER);
         email.setPromptText("name@example.edu");
         displayName.setPromptText("Фамилия Имя");
-        password.setPromptText("Минимум 12 символов");
+        password.setPromptText("Минимум 14 символов, 3 класса символов");
         submit.getStyleClass().add("primary-button");
         submit.setOnAction(event -> {
             String passwordValue = password.getText();
