@@ -1,51 +1,109 @@
-# Deployment
+# Запуск и деплой
 
-## Local stack
+Этот документ нужен не для красивой схемы, а для повторяемого запуска. Если другой человек клонирует репозиторий, он должен поднять проект без угадывания переменных.
 
-Generate local secrets:
+## Локальный запуск
 
-```bash
-./scripts/bootstrap-env.sh
-```
+1. Сгенерировать `.env`:
 
-Start the core system:
+   ```bash
+   ./scripts/bootstrap-env.sh
+   ```
 
-```bash
-docker compose up --build
-```
+2. Запустить сервисы:
 
-Open:
+   ```bash
+   docker compose up --build
+   ```
 
-- Dashboard: http://localhost:3000
-- Analytics API: http://localhost:8080/api
-- Ingest gateway: http://localhost:8081/healthz
+3. Открыть dashboard:
 
-Start the simulated vision worker:
+   ```text
+   http://localhost:3000
+   ```
+
+4. Проверить ingest вручную:
+
+   ```bash
+   make smoke
+   ```
+
+## Что создаёт bootstrap
+
+`scripts/bootstrap-env.sh` создаёт `.env` и печатает стартовые логины:
+
+- `ADMIN_EMAIL` / `ADMIN_PASSWORD`;
+- `TECHNICIAN_EMAIL` / `TECHNICIAN_PASSWORD`;
+- `TEACHER_EMAIL` / `TEACHER_PASSWORD`.
+
+Также генерируются `POSTGRES_PASSWORD`, `INGEST_API_KEY` и `JWT_SECRET`. Файл `.env` добавлен в `.gitignore`.
+
+## Worker
+
+Симулятор:
 
 ```bash
 docker compose --profile worker up --build vision-worker
 ```
 
-Run the worker against a device camera outside Docker:
+Локальная камера:
 
 ```bash
 cd services/vision-worker
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python app/main.py
+CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
 ```
 
-Phones are usually connected through an IP-camera app that exposes RTSP or HTTP MJPEG. Put that URL into `CAMERA_SOURCE` or add it through the technician/admin panel.
+RTSP/HTTP камера:
+
+```bash
+CAMERA_SOURCE=rtsp://example.local:8554/live DETECTOR=hog python -m app.main
+```
 
 ## GitHub Pages
 
-The frontend is deployed by `.github/workflows/deploy-pages.yml` on every push to `main`. Without a configured backend URL it runs in demo mode. Demo accounts are visible only in the static frontend and are separate from generated local backend credentials.
+GitHub Pages публикует frontend из workflow `.github/workflows/deploy-pages.yml`.
 
-To connect GitHub Pages to a public API, set the repository variable `VITE_API_URL` to the API base URL, for example:
+Сайт проекта:
 
 ```text
-https://api.example.com/api
+https://fakedesyncc.github.io/AudienceFlow/
 ```
 
-GitHub Pages hosts only static frontend files. The backend services are containerized and can be deployed later to a VPS, Render, Railway, Fly.io, or a university server.
+Для первого включения Pages в пустом репозитории может потребоваться один раз включить источник `GitHub Actions` в Settings → Pages или выполнить:
+
+```bash
+gh api -X POST repos/fakedesyncc/AudienceFlow/pages -f build_type=workflow
+```
+
+После этого push в `main` запускает:
+
+- CI;
+- frontend build;
+- upload Pages artifact;
+- deploy.
+
+## Подключение реального API к Pages
+
+По умолчанию Pages dashboard работает в demo mode. Это нужно потому, что GitHub Pages не запускает backend.
+
+Чтобы dashboard ходил в публичный API, добавь repository variable:
+
+```text
+VITE_API_URL=https://your-api.example.com/api
+```
+
+После изменения переменной перезапусти `Deploy GitHub Pages`.
+
+## Где держать backend
+
+Подходящие варианты:
+
+- VPS с Docker Compose;
+- сервер кафедры или лаборатории;
+- Render/Railway/Fly.io;
+- любой Kubernetes/VM стенд, если нужно показать «взрослый» деплой.
+
+Для MVP достаточно Docker Compose. Для публичной эксплуатации нужно отдельно настроить HTTPS, CORS, резервное копирование PostgreSQL и нормальное хранение секретов.
