@@ -2,6 +2,7 @@ package io.audienceflow.desktop;
 
 import io.audienceflow.desktop.api.AudienceFlowApiClient;
 import io.audienceflow.desktop.api.LiveConnection;
+import io.audienceflow.desktop.api.PreviewClient;
 import io.audienceflow.desktop.IconGlyph.Name;
 import io.audienceflow.desktop.model.AuthSession;
 import io.audienceflow.desktop.model.Camera;
@@ -9,9 +10,14 @@ import io.audienceflow.desktop.model.CameraRequest;
 import io.audienceflow.desktop.model.CreateRoomRequest;
 import io.audienceflow.desktop.model.CreateUserRequest;
 import io.audienceflow.desktop.model.CurrentAttendance;
+import io.audienceflow.desktop.model.PreviewState;
 import io.audienceflow.desktop.model.Role;
 import io.audienceflow.desktop.model.Room;
 import io.audienceflow.desktop.model.UserView;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -41,6 +47,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SelectionMode;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.Tab;
@@ -50,6 +57,8 @@ import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableRow;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
@@ -76,7 +85,12 @@ public final class AudienceFlowDesktopApplication extends Application {
     private Stage stage;
     private AuthSession session;
     private ScheduledExecutorService refreshExecutor;
+    private ScheduledExecutorService previewExecutor;
     private LiveConnection liveConnection;
+    private PreviewClient previewClient;
+    private byte[] latestPreviewFrame;
+    private double previewZoom = 1.0;
+    private long lastPreviewErrorAt;
 
     private Label liveStateLabel;
     private Label snapshotLabel;
@@ -95,6 +109,12 @@ public final class AudienceFlowDesktopApplication extends Application {
     private Label inspectorCamera;
     private Label inspectorUpdated;
     private ProgressBar inspectorProgress;
+    private ImageView previewImageView;
+    private Label previewStatusLabel;
+    private Label previewCountLabel;
+    private Label previewConfidenceLabel;
+    private Label previewFpsLabel;
+    private Label previewMetaLabel;
 
     public static void main(String[] args) {
         launch(args);
@@ -215,7 +235,7 @@ public final class AudienceFlowDesktopApplication extends Application {
     }
 
     private Node buildSidebar() {
-        HBox brand = new HBox(12, icon(Name.MARK, 34, 22, "brand-icon", "on-dark"), label("AudienceFlow", "sidebar-title"));
+        HBox brand = new HBox(12, icon(Name.MARK, 34, 22, "brand-icon"), label("AudienceFlow", "sidebar-title"));
         brand.setAlignment(Pos.CENTER_LEFT);
         Label caption = label("ЛГТУ · операторский контур", "sidebar-caption");
         userLabel = label("", "sidebar-user");
@@ -261,13 +281,91 @@ public final class AudienceFlowDesktopApplication extends Application {
     private Node buildTabs() {
         TabPane tabs = new TabPane();
         tabs.getStyleClass().add("workspace-tabs");
+        tabs.getTabs().add(tab("Камера", buildLiveCameraView(), Name.CAMERA));
         tabs.getTabs().add(tab("Оперативно", buildMonitoringView(), Name.LIVE));
         tabs.getTabs().add(tab("Аудитории", buildRoomsView(), Name.ROOMS));
-        tabs.getTabs().add(tab("Камеры", buildCamerasView(), Name.CAMERA));
+        tabs.getTabs().add(tab("Источники", buildCamerasView(), Name.SERVER));
         if (isAdmin()) {
             tabs.getTabs().add(tab("Доступ", buildUsersView(), Name.SHIELD));
         }
         return tabs;
+    }
+
+    private Node buildLiveCameraView() {
+        TextField previewUrl = new TextField("http://localhost:8090");
+        PasswordField previewToken = new PasswordField();
+        Button connect = new Button("Подключить");
+        Button stop = new Button("Остановить");
+        Button zoomOut = new Button("-25%");
+        Button zoomReset = new Button("100%");
+        Button zoomIn = new Button("+25%");
+        Button snapshot = new Button("Снимок");
+
+        previewUrl.setPromptText("http://localhost:8090");
+        previewToken.setPromptText("Preview token, если задан");
+        connect.getStyleClass().add("primary-button");
+        connect.setGraphic(icon(Name.LIVE, "on-primary"));
+        stop.getStyleClass().add("secondary-button");
+        stop.setGraphic(icon(Name.STOP, "button-icon"));
+        snapshot.getStyleClass().add("secondary-button");
+        snapshot.setGraphic(icon(Name.SNAPSHOT, "button-icon"));
+        zoomOut.getStyleClass().add("secondary-button");
+        zoomReset.getStyleClass().add("secondary-button");
+        zoomIn.getStyleClass().add("secondary-button");
+
+        previewImageView = new ImageView();
+        previewImageView.setPreserveRatio(true);
+        previewImageView.setSmooth(true);
+        previewImageView.setFitWidth(900);
+
+        Label empty = label("Подключите vision-worker preview, чтобы увидеть live-видео с рамками детекции.", "video-empty");
+        StackPane videoStage = new StackPane(empty, previewImageView);
+        videoStage.getStyleClass().add("video-stage");
+        ScrollPane videoScroll = new ScrollPane(videoStage);
+        videoScroll.getStyleClass().add("video-scroll");
+        videoScroll.setFitToWidth(true);
+        videoScroll.setFitToHeight(true);
+
+        previewStatusLabel = label("Preview не подключён", "preview-status");
+        previewCountLabel = label("0", "camera-value");
+        previewConfidenceLabel = label("0%", "camera-value");
+        previewFpsLabel = label("0.0", "camera-value");
+        previewMetaLabel = label("Источник не выбран", "muted");
+
+        VBox controls = new VBox(14,
+                label("Live камера", "panel-title"),
+                field("Preview URL", previewUrl),
+                field("Токен preview", previewToken),
+                new HBox(10, connect, stop),
+                separator(),
+                cameraStat("Людей в кадре", previewCountLabel),
+                cameraStat("Достоверность", previewConfidenceLabel),
+                cameraStat("FPS preview", previewFpsLabel),
+                previewMetaLabel,
+                separator(),
+                label("Масштаб", "field-label"),
+                new HBox(8, zoomOut, zoomReset, zoomIn),
+                snapshot
+        );
+        controls.getStyleClass().addAll("panel", "camera-controls");
+
+        connect.setOnAction(event -> startPreview(previewUrl.getText(), previewToken.getText()));
+        stop.setOnAction(event -> stopPreview("Preview остановлен"));
+        zoomOut.setOnAction(event -> setPreviewZoom(Math.max(0.5, previewZoom - 0.25)));
+        zoomReset.setOnAction(event -> setPreviewZoom(1.0));
+        zoomIn.setOnAction(event -> setPreviewZoom(Math.min(3.0, previewZoom + 0.25)));
+        snapshot.setOnAction(event -> savePreviewSnapshot());
+
+        BorderPane videoPanel = new BorderPane(videoScroll);
+        videoPanel.getStyleClass().add("panel");
+        videoPanel.setTop(new HBox(12, icon(Name.CAMERA, 34, 18, "metric-icon"), previewStatusLabel));
+        BorderPane.setAlignment(videoPanel.getTop(), Pos.CENTER_LEFT);
+
+        BorderPane view = new BorderPane(videoPanel);
+        view.getStyleClass().add("content");
+        BorderPane.setMargin(controls, new Insets(0, 0, 0, 16));
+        view.setRight(controls);
+        return view;
     }
 
     private Node buildMonitoringView() {
@@ -605,9 +703,99 @@ public final class AudienceFlowDesktopApplication extends Application {
             liveConnection.close();
             liveConnection = null;
         }
+        stopPreview(null);
         if (refreshExecutor != null) {
             refreshExecutor.shutdownNow();
             refreshExecutor = null;
+        }
+    }
+
+    private void startPreview(String url, String token) {
+        stopPreview(null);
+        try {
+            previewClient = new PreviewClient(url, token);
+        } catch (RuntimeException e) {
+            updatePreviewStatus(userMessage(e), true);
+            return;
+        }
+
+        lastPreviewErrorAt = 0;
+        updatePreviewStatus("Подключаюсь к preview worker", false);
+        previewExecutor = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "audienceflow-preview");
+            thread.setDaemon(true);
+            return thread;
+        });
+        previewExecutor.scheduleWithFixedDelay(this::fetchPreviewFrame, 0, 180, TimeUnit.MILLISECONDS);
+    }
+
+    private void fetchPreviewFrame() {
+        PreviewClient client = previewClient;
+        if (client == null) {
+            return;
+        }
+        try {
+            byte[] frame = client.frame().join();
+            PreviewState state = client.state().join();
+            Platform.runLater(() -> applyPreviewFrame(frame, state));
+        } catch (RuntimeException e) {
+            Platform.runLater(() -> reportPreviewError(userMessage(e)));
+        }
+    }
+
+    private void applyPreviewFrame(byte[] frame, PreviewState state) {
+        latestPreviewFrame = frame;
+        if (previewImageView != null) {
+            previewImageView.setImage(new Image(new ByteArrayInputStream(frame)));
+        }
+        setText(previewCountLabel, String.valueOf(state.count()));
+        setText(previewConfidenceLabel, Math.round(state.confidence() * 100) + "%");
+        setText(previewFpsLabel, String.format("%.1f", state.fps()));
+        setText(
+                previewMetaLabel,
+                "room_id " + state.roomId()
+                        + " · " + nullSafe(state.detector())
+                        + " · " + nullSafe(state.source())
+                        + " · boxes " + (state.detections() == null ? 0 : state.detections().size())
+        );
+        setPreviewStatusText("LIVE preview · " + TIME_FORMAT.format(Instant.now()), false);
+    }
+
+    private void stopPreview(String message) {
+        previewClient = null;
+        if (previewExecutor != null) {
+            previewExecutor.shutdownNow();
+            previewExecutor = null;
+        }
+        if (message != null) {
+            updatePreviewStatus(message, false);
+        }
+    }
+
+    private void setPreviewZoom(double value) {
+        previewZoom = value;
+        if (previewImageView != null) {
+            previewImageView.setScaleX(value);
+            previewImageView.setScaleY(value);
+        }
+        updatePreviewStatus("Масштаб " + Math.round(value * 100) + "%", false);
+    }
+
+    private void savePreviewSnapshot() {
+        if (latestPreviewFrame == null || latestPreviewFrame.length == 0) {
+            updatePreviewStatus("Нет кадра для снимка", true);
+            return;
+        }
+        Path directory = Path.of(System.getProperty("user.home"), "Pictures", "AudienceFlow");
+        Path target = directory.resolve("audienceflow-" + DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                .withZone(ZoneId.systemDefault())
+                .format(Instant.now()) + ".jpg");
+        try {
+            Files.createDirectories(directory);
+            Files.write(target, latestPreviewFrame);
+            updatePreviewStatus("Снимок сохранён: " + target, false);
+        } catch (IOException e) {
+            updatePreviewStatus("Не удалось сохранить снимок: " + e.getMessage(), true);
         }
     }
 
@@ -763,6 +951,12 @@ public final class AudienceFlowDesktopApplication extends Application {
         return card;
     }
 
+    private Node cameraStat(String title, Label value) {
+        VBox stat = new VBox(4, label(title, "metric-title"), value);
+        stat.getStyleClass().add("camera-stat");
+        return stat;
+    }
+
     private Node loginSignalPanel() {
         VBox panel = new VBox(14);
         panel.getStyleClass().add("signal-panel");
@@ -909,6 +1103,31 @@ public final class AudienceFlowDesktopApplication extends Application {
         appendFeed((error ? "Ошибка: " : "") + message);
     }
 
+    private void updatePreviewStatus(String message, boolean error) {
+        setPreviewStatusText(message, error);
+        appendFeed((error ? "Preview: ошибка: " : "Preview: ") + message);
+    }
+
+    private void reportPreviewError(String message) {
+        long now = System.currentTimeMillis();
+        if (now - lastPreviewErrorAt > 3000) {
+            lastPreviewErrorAt = now;
+            updatePreviewStatus(message, true);
+        } else {
+            setPreviewStatusText(message, true);
+        }
+    }
+
+    private void setPreviewStatusText(String message, boolean error) {
+        if (previewStatusLabel != null) {
+            previewStatusLabel.setText(message);
+            previewStatusLabel.getStyleClass().removeAll("error");
+            if (error) {
+                previewStatusLabel.getStyleClass().add("error");
+            }
+        }
+    }
+
     private void setText(Label label, String text) {
         if (label != null) {
             label.setText(text);
@@ -927,6 +1146,10 @@ public final class AudienceFlowDesktopApplication extends Application {
             current = current.getCause();
         }
         return current.getMessage() == null ? "Операция не выполнена" : current.getMessage();
+    }
+
+    private String nullSafe(String value) {
+        return value == null || value.isBlank() ? "n/a" : value;
     }
 
     private String sourceLabel(String source) {

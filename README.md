@@ -32,6 +32,8 @@ Web demo: https://fakedesyncc.github.io/AudienceFlow/
 
 Основной клиент — `services/desktop-client`. Это JavaFX-приложение для Windows, macOS и Linux: вход в API, оперативная таблица аудиторий, KPI, live WebSocket, fallback polling, разделы аудиторий, камер и пользователей.
 
+Вкладка `Камера` подключается к preview-каналу vision-worker: показывает живой кадр с рамками детекции, текущий счёт людей, уверенность, FPS, умеет менять масштаб и сохранять снимки в `~/Pictures/AudienceFlow`.
+
 Web-клиент — `services/web`. Он оставлен как статическая демонстрация для GitHub Pages и быстрого показа интерфейса без backend.
 
 Ни desktop, ни web не хранят рабочие секреты. В web доступны два режима:
@@ -122,6 +124,12 @@ make smoke
 docker compose --profile worker up --build vision-worker
 ```
 
+После запуска worker открой desktop-клиент, вкладку `Камера`, и укажи:
+
+```text
+Preview URL: http://localhost:8090
+```
+
 Камера ноутбука или подключённого устройства:
 
 ```bash
@@ -129,10 +137,18 @@ cd services/vision-worker
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
+PREVIEW_ADDR=127.0.0.1:8090 CAMERA_SOURCE=0 DETECTOR=hog ROOM_ID=1 GATEWAY_URL=http://localhost:8081/v1/events python -m app.main
 ```
 
 Телефон обычно подключается через IP-camera приложение. Если приложение отдаёт RTSP или HTTP MJPEG, URL можно передать в `CAMERA_SOURCE` или добавить через раздел камер в панели.
+
+Если preview доступен не только с локальной машины, задай случайный токен:
+
+```bash
+PREVIEW_TOKEN=$(openssl rand -hex 24)
+```
+
+Тот же токен вводится во вкладке `Камера` desktop-клиента. В репозиторий токены не добавляются.
 
 YOLO включается отдельно:
 
