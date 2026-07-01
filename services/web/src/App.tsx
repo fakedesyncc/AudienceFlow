@@ -2,12 +2,17 @@ import {
   Activity,
   Building2,
   Camera,
+  Clock3,
   DoorOpen,
+  Eye,
   Gauge,
   KeyRound,
   LogOut,
+  MapPin,
   Plus,
+  RadioTower,
   RefreshCw,
+  Server,
   ShieldCheck,
   UserRound,
   Users,
@@ -26,10 +31,10 @@ import {
   YAxis,
 } from 'recharts';
 import {
+  createPresentationSession,
   createCamera,
   createRoom,
   createUser,
-  demoAccounts,
   fetchCameras,
   fetchCurrent,
   fetchRooms,
@@ -55,7 +60,16 @@ import type {
   UserView,
 } from './types';
 
-type View = 'overview' | 'rooms' | 'cameras' | 'users';
+type View = 'monitoring' | 'overview' | 'rooms' | 'cameras' | 'users';
+type LiveState = 'presentation' | 'polling' | 'live' | 'offline';
+
+interface TelemetryEvent {
+  id: string;
+  ts: Date;
+  title: string;
+  detail: string;
+  status: CurrentAttendance['status'] | 'info';
+}
 
 const sessionStorageKey = 'audienceflow.session';
 const roleLabels: Record<Role, string> = {
@@ -67,12 +81,15 @@ const roleLabels: Record<Role, string> = {
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => restoreSession());
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
-  const [activeView, setActiveView] = useState<View>('overview');
+  const [activeView, setActiveView] = useState<View>('monitoring');
   const [current, setCurrent] = useState<CurrentAttendance[]>([]);
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [cameras, setCameras] = useState<CameraType[]>([]);
   const [users, setUsers] = useState<UserView[]>([]);
+  const [telemetry, setTelemetry] = useState<TelemetryEvent[]>([]);
+  const [liveState, setLiveState] = useState<LiveState>('offline');
+  const [lastSnapshotAt, setLastSnapshotAt] = useState<Date | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,7 +109,7 @@ export function App() {
         fetchRooms(session),
         fetchCameras(session),
       ]);
-      setCurrent(currentData);
+      applySnapshot(currentData, session.demo ? 'presentation' : 'polling');
       setRooms(roomData);
       setCameras(cameraData);
       if (session.user.role === 'ADMIN') {
@@ -113,7 +130,7 @@ export function App() {
       return;
     }
     void loadData();
-    const interval = window.setInterval(() => void loadData(), 10_000);
+    const interval = window.setInterval(() => void loadData(), session.demo ? 2500 : 5000);
     return () => window.clearInterval(interval);
   }, [loadData, session]);
 
@@ -135,11 +152,16 @@ export function App() {
       return;
     }
     const socket = new WebSocket(url);
+    socket.onopen = () => setLiveState('live');
     socket.onmessage = (event) => {
       const message = parseLiveMessage(event.data);
-      setCurrent(message.rooms);
+      applySnapshot(message.rooms, 'live');
     };
-    socket.onerror = () => setError('Live-подключение временно недоступно');
+    socket.onerror = () => {
+      setLiveState('polling');
+      setError('Live-подключение временно недоступно, включён резервный polling');
+    };
+    socket.onclose = () => setLiveState('polling');
     return () => socket.close();
   }, [session]);
 
@@ -156,6 +178,7 @@ export function App() {
   }
 
   const navigation = [
+    { id: 'monitoring' as View, label: 'Мониторинг', icon: RadioTower, enabled: true },
     { id: 'overview' as View, label: 'Обзор', icon: Activity, enabled: true },
     { id: 'rooms' as View, label: 'Аудитории', icon: DoorOpen, enabled: true },
     { id: 'cameras' as View, label: 'Камеры', icon: Camera, enabled: true },
@@ -163,8 +186,16 @@ export function App() {
   ].filter((item) => item.enabled);
 
   function handleLogout() {
-    localStorage.removeItem(sessionStorageKey);
+    window.sessionStorage.removeItem(sessionStorageKey);
     setSession(null);
+  }
+
+  function applySnapshot(items: CurrentAttendance[], state: LiveState) {
+    const receivedAt = new Date();
+    setCurrent(items);
+    setLastSnapshotAt(receivedAt);
+    setLiveState(state);
+    setTelemetry((previous) => buildTelemetryEvents(items, receivedAt, previous));
   }
 
   async function handleCreateRoom(payload: CreateRoomPayload) {
@@ -203,7 +234,7 @@ export function App() {
           </div>
           <div>
             <strong>AudienceFlow</strong>
-            <span>{session.demo ? 'GitHub Pages demo' : session.apiUrl}</span>
+            <span>{session.demo ? 'Презентационный режим' : session.apiUrl}</span>
           </div>
         </div>
 
@@ -270,6 +301,17 @@ export function App() {
             onSelectRoom={setSelectedRoomId}
           />
         )}
+        {activeView === 'monitoring' && (
+          <MonitoringView
+            current={current}
+            cameras={cameras}
+            stats={dashboardStats}
+            telemetry={telemetry}
+            liveState={liveState}
+            lastSnapshotAt={lastSnapshotAt}
+            onRefresh={loadData}
+          />
+        )}
         {activeView === 'rooms' && (
           <RoomsView rooms={rooms} canManage={Boolean(canManageInfrastructure)} onCreate={handleCreateRoom} />
         )}
@@ -296,8 +338,8 @@ function LoginScreen({
   onConfigChange: (config: RuntimeConfig) => void;
   onLogin: (session: AuthSession) => void;
 }) {
-  const [email, setEmail] = useState(config.mode === 'demo' ? demoAccounts[0].email : '');
-  const [password, setPassword] = useState(config.mode === 'demo' ? demoAccounts[0].password : '');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [draftConfig, setDraftConfig] = useState(config);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -314,13 +356,21 @@ function LoginScreen({
       const savedConfig = saveRuntimeConfig(draftConfig);
       onConfigChange(savedConfig);
       const session = await login(email, password, savedConfig);
-      localStorage.setItem(sessionStorageKey, JSON.stringify(session));
+      window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(session));
       onLogin(session);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось войти');
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function openPresentation() {
+    const savedConfig = saveRuntimeConfig({ ...draftConfig, mode: 'demo' });
+    onConfigChange(savedConfig);
+    const session = createPresentationSession();
+    window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(session));
+    onLogin(session);
   }
 
   return (
@@ -332,7 +382,7 @@ function LoginScreen({
           </div>
           <div>
             <strong>AudienceFlow</strong>
-            <span>{draftConfig.mode === 'demo' ? 'Демо-режим' : 'Подключение к API'}</span>
+            <span>{draftConfig.mode === 'demo' ? 'Презентационный мониторинг' : 'Защищённый вход'}</span>
           </div>
         </div>
 
@@ -341,13 +391,9 @@ function LoginScreen({
             <button
               type="button"
               className={draftConfig.mode === 'demo' ? 'selected' : ''}
-              onClick={() => {
-                setDraftConfig({ ...draftConfig, mode: 'demo' });
-                setEmail(demoAccounts[0].email);
-                setPassword(demoAccounts[0].password);
-              }}
+              onClick={() => setDraftConfig({ ...draftConfig, mode: 'demo' })}
             >
-              Demo
+              Презентация
             </button>
             <button
               type="button"
@@ -358,57 +404,184 @@ function LoginScreen({
             </button>
           </div>
 
-          {draftConfig.mode === 'api' && (
-            <label>
-              API URL
-              <input
-                value={draftConfig.apiUrl}
-                onChange={(event) => setDraftConfig({ ...draftConfig, apiUrl: event.target.value })}
-                placeholder="https://example.com/api"
-                required
-              />
-            </label>
+          {draftConfig.mode === 'demo' ? (
+            <div className="presentation-entry">
+              <div className="presentation-icon">
+                <Eye size={22} />
+              </div>
+              <div>
+                <strong>Без демонстрационных логинов и паролей</strong>
+                <span>Открывается обезличенный мониторинг с имитацией потока данных. Рабочие учётные записи здесь не хранятся.</span>
+              </div>
+              <button type="button" className="primary-button" onClick={openPresentation}>
+                <RadioTower size={18} />
+                <span>Открыть мониторинг</span>
+              </button>
+            </div>
+          ) : (
+            <>
+              <label>
+                API URL
+                <input
+                  value={draftConfig.apiUrl}
+                  onChange={(event) => setDraftConfig({ ...draftConfig, apiUrl: event.target.value })}
+                  placeholder="https://example.com/api"
+                  autoComplete="url"
+                  required
+                />
+              </label>
+              <label>
+                Email
+                <input
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  type="email"
+                  autoComplete="username"
+                  required
+                />
+              </label>
+              <label>
+                Пароль
+                <input
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  type="password"
+                  minLength={12}
+                  autoComplete="current-password"
+                  required
+                />
+              </label>
+              {error && <div className="form-error">{error}</div>}
+              <button className="primary-button" disabled={submitting}>
+                <KeyRound size={18} />
+                <span>{submitting ? 'Вход...' : 'Войти'}</span>
+              </button>
+            </>
           )}
 
-          <label>
-            Email
-            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
-          </label>
-          <label>
-            Пароль
-            <input
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
-              minLength={12}
-              required
-            />
-          </label>
-          {error && <div className="form-error">{error}</div>}
-          <button className="primary-button" disabled={submitting}>
-            <KeyRound size={18} />
-            <span>{submitting ? 'Вход...' : 'Войти'}</span>
-          </button>
         </form>
-
-        {draftConfig.mode === 'demo' && (
-          <div className="demo-logins">
-            {demoAccounts.map((account) => (
-              <button
-                key={account.role}
-                type="button"
-                onClick={() => {
-                  setEmail(account.email);
-                  setPassword(account.password);
-                }}
-              >
-                {roleLabels[account.role]}
-              </button>
-            ))}
-          </div>
-        )}
       </section>
     </main>
+  );
+}
+
+function MonitoringView({
+  current,
+  cameras,
+  stats,
+  telemetry,
+  liveState,
+  lastSnapshotAt,
+  onRefresh,
+}: {
+  current: CurrentAttendance[];
+  cameras: CameraType[];
+  stats: DashboardStats;
+  telemetry: TelemetryEvent[];
+  liveState: LiveState;
+  lastSnapshotAt: Date | null;
+  onRefresh: () => Promise<void>;
+}) {
+  const busiest = [...current].sort((left, right) => right.occupancyPercent - left.occupancyPercent)[0];
+  const maintenanceCount = cameras.filter((camera) => camera.status === 'maintenance').length;
+
+  return (
+    <div className="monitoring-layout">
+      <section className="monitor-hero">
+        <div>
+          <span className="system-eyebrow">Липецкий государственный технический университет</span>
+          <h2>Оперативный мониторинг аудиторного фонда</h2>
+          <p>
+            Live-картина по корпусам, аудиториям и камерам. Данные обновляются автоматически; при недоступном
+            WebSocket используется резервный polling.
+          </p>
+        </div>
+        <div className="signal-board">
+          <LiveBadge state={liveState} />
+          <div className="signal-time">
+            <Clock3 size={18} />
+            <span>{lastSnapshotAt ? formatClock(lastSnapshotAt) : 'ожидание данных'}</span>
+          </div>
+          <button className="icon-button wide-light" onClick={() => void onRefresh()} title="Запросить свежий снимок">
+            <RefreshCw size={17} />
+            <span>Обновить</span>
+          </button>
+        </div>
+      </section>
+
+      <section className="monitor-strip">
+        <Metric icon={<DoorOpen size={20} />} label="Аудиторий в контуре" value={stats.rooms} accent="teal" />
+        <Metric icon={<Users size={20} />} label="Людей сейчас" value={stats.totalPeople} accent="blue" />
+        <Metric icon={<Activity size={20} />} label="Средняя загрузка" value={`${stats.averageOccupancy}%`} accent="violet" />
+        <Metric icon={<Wrench size={20} />} label="Камер на обслуживании" value={maintenanceCount} accent="amber" />
+      </section>
+
+      <section className="monitor-grid">
+        <div className="panel live-map-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Карта занятости</h2>
+              <span>{busiest ? `Максимальная загрузка: ${busiest.roomName}` : 'Нет активных измерений'}</span>
+            </div>
+            <MapPin size={20} />
+          </div>
+          <div className="live-room-grid">
+            {current.map((item) => (
+              <LiveRoomTile key={item.roomId} item={item} />
+            ))}
+          </div>
+        </div>
+
+        <div className="panel live-camera-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Камеры и каналы</h2>
+              <span>Текущее состояние источников</span>
+            </div>
+            <Server size={20} />
+          </div>
+          <div className="monitor-camera-stack">
+            {cameras.map((camera) => (
+              <article className="monitor-camera" key={camera.id}>
+                <div className={camera.status === 'online' ? 'camera-dot online' : 'camera-dot'}>
+                  {camera.status === 'online' ? <Wifi size={16} /> : <WifiOff size={16} />}
+                </div>
+                <div>
+                  <strong>{camera.name}</strong>
+                  <span>{camera.roomName}</span>
+                </div>
+                <StatusBadge status={camera.status} />
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel live-feed-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Лента событий</h2>
+              <span>Последние изменения состояния</span>
+            </div>
+            <RadioTower size={20} />
+          </div>
+          <div className="telemetry-feed">
+            {telemetry.length === 0 ? (
+              <div className="empty-feed">Ожидание первого снимка.</div>
+            ) : (
+              telemetry.map((event) => (
+                <article className={`telemetry-event ${event.status}`} key={event.id}>
+                  <time>{formatClock(event.ts)}</time>
+                  <div>
+                    <strong>{event.title}</strong>
+                    <span>{event.detail}</span>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -852,6 +1025,29 @@ function OccupancyCard({ item }: { item: CurrentAttendance }) {
   );
 }
 
+function LiveRoomTile({ item }: { item: CurrentAttendance }) {
+  return (
+    <article className={`live-room-tile ${item.status}`}>
+      <div className="live-room-top">
+        <div>
+          <strong>{item.roomName}</strong>
+          <span>
+            {item.building}, этаж {item.floor}
+          </span>
+        </div>
+        <span className="live-room-count">{item.count}</span>
+      </div>
+      <div className="live-room-scale">
+        <div style={{ width: `${Math.min(100, item.occupancyPercent)}%` }} />
+      </div>
+      <div className="live-room-meta">
+        <span>{item.occupancyPercent}% занято</span>
+        <span>{item.timestamp ? formatClock(new Date(item.timestamp)) : 'нет сигнала'}</span>
+      </div>
+    </article>
+  );
+}
+
 function Metric({ icon, label, value, accent }: { icon: ReactNode; label: string; value: ReactNode; accent: string }) {
   return (
     <article className={`metric ${accent}`}>
@@ -877,6 +1073,21 @@ function StatusBadge({ status }: { status: CameraType['status'] }) {
   return <span className={`status-badge ${status}`}>{status}</span>;
 }
 
+function LiveBadge({ state }: { state: LiveState }) {
+  const labels: Record<LiveState, string> = {
+    live: 'Live WebSocket',
+    polling: 'Polling',
+    presentation: 'Презентация',
+    offline: 'Нет сигнала',
+  };
+  return (
+    <span className={`live-badge ${state}`}>
+      <RadioTower size={16} />
+      {labels[state]}
+    </span>
+  );
+}
+
 interface DashboardStats {
   rooms: number;
   averageOccupancy: number;
@@ -897,8 +1108,33 @@ function buildStats(current: CurrentAttendance[], cameras: CameraType[]): Dashbo
   };
 }
 
+function buildTelemetryEvents(
+  items: CurrentAttendance[],
+  receivedAt: Date,
+  previous: TelemetryEvent[],
+): TelemetryEvent[] {
+  if (items.length === 0) {
+    return previous;
+  }
+
+  const sorted = [...items].sort((left, right) => right.occupancyPercent - left.occupancyPercent);
+  const important = sorted.filter((item) => item.status !== 'normal').slice(0, 3);
+  const source = important.length > 0 ? important : sorted.slice(0, 2);
+  const next = source.map((item) => ({
+    id: `${receivedAt.getTime()}-${item.roomId}`,
+    ts: receivedAt,
+    title: item.status === 'full' ? 'Критическая загрузка' : item.status === 'warning' ? 'Высокая загрузка' : 'Обновление',
+    detail: `${item.roomName}: ${item.count}/${item.capacity}, ${item.occupancyPercent}%`,
+    status: item.status === 'normal' ? 'info' as const : item.status,
+  }));
+
+  return [...next, ...previous].slice(0, 36);
+}
+
 function viewTitle(view: View): string {
   switch (view) {
+    case 'monitoring':
+      return 'Мониторинг';
     case 'rooms':
       return 'Аудитории';
     case 'cameras':
@@ -914,20 +1150,25 @@ function formatTime(value: string): string {
   return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 }
 
+function formatClock(value: Date): string {
+  return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(value);
+}
+
 function restoreSession(): AuthSession | null {
-  const raw = localStorage.getItem(sessionStorageKey);
+  localStorage.removeItem(sessionStorageKey);
+  const raw = window.sessionStorage.getItem(sessionStorageKey);
   if (!raw) {
     return null;
   }
   try {
     const parsed = JSON.parse(raw) as AuthSession;
     if (!parsed.token || !parsed.user || (!parsed.demo && !parsed.apiUrl)) {
-      localStorage.removeItem(sessionStorageKey);
+      window.sessionStorage.removeItem(sessionStorageKey);
       return null;
     }
     return parsed.demo ? { ...parsed, apiUrl: null } : parsed;
   } catch {
-    localStorage.removeItem(sessionStorageKey);
+    window.sessionStorage.removeItem(sessionStorageKey);
     return null;
   }
 }

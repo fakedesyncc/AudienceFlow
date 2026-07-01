@@ -7,7 +7,6 @@ import type {
   CurrentAttendance,
   LiveAttendanceMessage,
   Room,
-  Role,
   RuntimeConfig,
   TimelinePoint,
   UserView,
@@ -16,16 +15,12 @@ import type {
 const runtimeConfigKey = 'audienceflow.runtime-config';
 const defaultApiUrl = normalizeApiUrl(import.meta.env.VITE_API_URL?.trim() ?? '');
 
-export const demoAccounts = [
-  { role: 'ADMIN' as Role, email: 'af-admin@example.local', password: 'AF-Demo-Admin-2026!' },
-  { role: 'TECHNICIAN' as Role, email: 'af-tech@example.local', password: 'AF-Demo-Tech-2026!' },
-  { role: 'TEACHER' as Role, email: 'af-teacher@example.local', password: 'AF-Demo-Teacher-2026!' },
-];
-
 let demoRooms: Room[] = [
   { id: 1, name: 'Аудитория 305', building: 'Главный корпус', floor: '3', capacity: 64 },
   { id: 2, name: 'Лекционный зал 101', building: 'Главный корпус', floor: '1', capacity: 120 },
-  { id: 3, name: 'Лаборатория ИБ-2', building: 'Технопарк', floor: '2', capacity: 28 },
+  { id: 3, name: 'Лаборатория ИКН-2', building: 'Главный корпус', floor: '2', capacity: 32 },
+  { id: 4, name: 'Поточная аудитория Б-204', building: 'Корпус Б', floor: '2', capacity: 90 },
+  { id: 5, name: 'Лаборатория сетей', building: 'Корпус Б', floor: '3', capacity: 26 },
 ];
 
 let demoCameras: Camera[] = [
@@ -33,8 +28,8 @@ let demoCameras: Camera[] = [
     id: 1,
     roomId: 1,
     roomName: 'Аудитория 305',
-    name: 'Симулятор камеры',
-    sourceUrl: 'simulation',
+    name: 'Камера аудитории',
+    sourceUrl: null,
     streamType: 'simulation',
     status: 'online',
     enabled: true,
@@ -44,27 +39,25 @@ let demoCameras: Camera[] = [
     id: 2,
     roomId: 2,
     roomName: 'Лекционный зал 101',
-    name: 'RTSP вход',
-    sourceUrl: 'rtsp://phone-camera.local:8554/live',
-    streamType: 'rtsp',
+    name: 'Камера входной зоны',
+    sourceUrl: null,
+    streamType: 'simulation',
+    status: 'online',
+    enabled: true,
+    lastSeenAt: new Date().toISOString(),
+  },
+  {
+    id: 3,
+    roomId: 4,
+    roomName: 'Поточная аудитория Б-204',
+    name: 'Камера поточной аудитории',
+    sourceUrl: null,
+    streamType: 'simulation',
     status: 'maintenance',
     enabled: true,
     lastSeenAt: null,
   },
 ];
-
-let demoUsers: UserView[] = demoAccounts.map((account, index) => ({
-  id: `demo-${index + 1}`,
-  email: account.email,
-  displayName:
-    account.role === 'ADMIN'
-      ? 'Администратор AudienceFlow'
-      : account.role === 'TECHNICIAN'
-        ? 'Техник AudienceFlow'
-        : 'Преподаватель AudienceFlow',
-  role: account.role,
-  active: true,
-}));
 
 export function loadRuntimeConfig(): RuntimeConfig {
   const raw = localStorage.getItem(runtimeConfigKey);
@@ -94,16 +87,23 @@ export function saveRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
   return normalized;
 }
 
-export async function login(email: string, password: string, config: RuntimeConfig): Promise<AuthSession> {
-  if (config.mode === 'demo') {
-    const account = demoAccounts.find((candidate) => candidate.email === email && candidate.password === password);
-    if (!account) {
-      throw new Error('Неверные данные входа');
-    }
-    const user = demoUsers.find((candidate) => candidate.email === account.email)!;
-    return { token: `demo-token-${account.role}`, user, expiresInMinutes: 720, demo: true, apiUrl: null };
-  }
+export function createPresentationSession(): AuthSession {
+  return {
+    token: 'presentation-session',
+    user: {
+      id: 'presentation',
+      email: '',
+      displayName: 'Презентационный мониторинг',
+      role: 'TEACHER',
+      active: true,
+    },
+    expiresInMinutes: 0,
+    demo: true,
+    apiUrl: null,
+  };
+}
 
+export async function login(email: string, password: string, config: RuntimeConfig): Promise<AuthSession> {
   const apiUrl = normalizeApiUrl(config.apiUrl);
   if (!apiUrl) {
     throw new Error('Укажите API URL');
@@ -173,8 +173,7 @@ export async function createRoom(session: AuthSession, payload: CreateRoomPayloa
 
 export async function fetchCameras(session: AuthSession): Promise<Camera[]> {
   if (session.demo) {
-    const canSeeSource = session.user.role === 'ADMIN' || session.user.role === 'TECHNICIAN';
-    return demoCameras.map((camera) => (canSeeSource ? camera : { ...camera, sourceUrl: null }));
+    return demoCameras.map((camera) => ({ ...camera, sourceUrl: null }));
   }
   return request<Camera[]>('/cameras', {}, session);
 }
@@ -196,22 +195,14 @@ export async function createCamera(session: AuthSession, payload: CreateCameraPa
 
 export async function fetchUsers(session: AuthSession): Promise<UserView[]> {
   if (session.demo) {
-    return demoUsers;
+    return [];
   }
   return request<UserView[]>('/admin/users', {}, session);
 }
 
 export async function createUser(session: AuthSession, payload: CreateUserPayload): Promise<UserView> {
   if (session.demo) {
-    const user: UserView = {
-      id: `demo-${Date.now()}`,
-      email: payload.email,
-      displayName: payload.displayName,
-      role: payload.role,
-      active: true,
-    };
-    demoUsers = [...demoUsers, user];
-    return user;
+    throw new Error('Создание пользователей доступно только в API-режиме');
   }
   return request<UserView>('/admin/users', { method: 'POST', body: JSON.stringify(payload) }, session);
 }
