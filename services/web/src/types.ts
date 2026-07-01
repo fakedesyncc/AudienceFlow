@@ -1,0 +1,86 @@
+export type Role = 'TEACHER' | 'TECHNICIAN' | 'ADMIN';
+
+export interface UserView {
+  id: string;
+  email: string;
+  displayName: string;
+  role: Role;
+  active: boolean;
+}
+
+export interface AuthSession {
+  token: string;
+  user: UserView;
+  expiresInMinutes: number;
+  demo: boolean;
+}
+
+export interface Room {
+  id: number;
+  name: string;
+  building: string;
+  floor: string;
+  capacity: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CurrentAttendance {
+  roomId: number;
+  roomName: string;
+  building: string;
+  floor: string;
+  capacity: number;
+  count: number;
+  confidence: number;
+  timestamp: string | null;
+  occupancyPercent: number;
+  status: 'normal' | 'warning' | 'full';
+}
+
+export interface TimelinePoint {
+  bucket: string;
+  avgCount: number;
+  peakCount: number;
+  avgConfidence: number;
+}
+
+export interface Camera {
+  id: number;
+  roomId: number;
+  roomName: string;
+  name: string;
+  sourceUrl: string | null;
+  streamType: 'rtsp' | 'http' | 'device' | 'simulation';
+  status: 'online' | 'offline' | 'maintenance';
+  enabled: boolean;
+  lastSeenAt: string | null;
+}
+
+export interface CreateRoomPayload {
+  name: string;
+  building: string;
+  floor: string;
+  capacity: number;
+}
+
+export interface CreateCameraPayload {
+  roomId: number;
+  name: string;
+  sourceUrl: string;
+  streamType: Camera['streamType'];
+  status: Camera['status'];
+  enabled: boolean;
+}
+
+export interface CreateUserPayload {
+  email: string;
+  displayName: string;
+  role: Role;
+  password: string;
+}
+
+export interface LiveAttendanceMessage {
+  generatedAt: string;
+  rooms: CurrentAttendance[];
+}

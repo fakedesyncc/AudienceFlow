@@ -40,7 +40,9 @@ Phones are usually connected through an IP-camera app that exposes RTSP or HTTP 
 
 ## GitHub Pages
 
-The frontend is deployed by `.github/workflows/deploy-pages.yml` on every push to `main`. Without a configured backend URL it runs in demo mode. To connect it to a public API, set the repository variable `VITE_API_URL` to the API base URL, for example:
+The frontend is deployed by `.github/workflows/deploy-pages.yml` on every push to `main`. Without a configured backend URL it runs in demo mode. Demo accounts are visible only in the static frontend and are separate from generated local backend credentials.
+
+To connect GitHub Pages to a public API, set the repository variable `VITE_API_URL` to the API base URL, for example:
 
 ```text
 https://api.example.com/api
