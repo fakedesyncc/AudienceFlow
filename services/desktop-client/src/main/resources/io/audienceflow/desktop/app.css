@@ -282,6 +282,14 @@
     -fx-spacing: 14px;
 }
 
+.report-filters {
+    -fx-background-color: #ffffff;
+    -fx-background-radius: 14px;
+    -fx-border-color: #e7e5e4;
+    -fx-border-radius: 14px;
+    -fx-padding: 14px;
+}
+
 .metric-card,
 .panel {
     -fx-background-color: #ffffff;

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.audienceflow.desktop.model.AuthSession;
+import io.audienceflow.desktop.model.AttendanceSummary;
 import io.audienceflow.desktop.model.Camera;
 import io.audienceflow.desktop.model.CameraRequest;
 import io.audienceflow.desktop.model.CreateRoomRequest;
@@ -13,14 +14,18 @@ import io.audienceflow.desktop.model.CurrentAttendance;
 import io.audienceflow.desktop.model.LiveAttendanceMessage;
 import io.audienceflow.desktop.model.LoginRequest;
 import io.audienceflow.desktop.model.Room;
+import io.audienceflow.desktop.model.TimelinePoint;
 import io.audienceflow.desktop.model.UserView;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -59,6 +64,26 @@ public final class AudienceFlowApiClient {
     public CompletableFuture<List<CurrentAttendance>> current() {
         return get("/attendance/current", new TypeReference<>() {
         });
+    }
+
+    public CompletableFuture<AttendanceSummary> attendanceSummary(int roomId, Instant from, Instant to) {
+        return get(
+                "/attendance/summary?roomId=" + roomId
+                        + "&from=" + url(from.toString())
+                        + "&to=" + url(to.toString()),
+                AttendanceSummary.class
+        );
+    }
+
+    public CompletableFuture<List<TimelinePoint>> timeline(int roomId, int bucketMinutes, Instant from, Instant to) {
+        return get(
+                "/attendance/timeline?roomId=" + roomId
+                        + "&bucketMinutes=" + bucketMinutes
+                        + "&from=" + url(from.toString())
+                        + "&to=" + url(to.toString()),
+                new TypeReference<>() {
+                }
+        );
     }
 
     public CompletableFuture<List<Room>> rooms() {
@@ -104,6 +129,10 @@ public final class AudienceFlowApiClient {
     }
 
     private <T> CompletableFuture<T> get(String path, TypeReference<T> type) {
+        return send(request(path).GET().build(), type);
+    }
+
+    private <T> CompletableFuture<T> get(String path, Class<T> type) {
         return send(request(path).GET().build(), type);
     }
 
@@ -222,6 +251,10 @@ public final class AudienceFlowApiClient {
             result = result.substring(0, result.length() - 1);
         }
         return result;
+    }
+
+    private static String url(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
     private static final class AttendanceSocketListener implements WebSocket.Listener {
