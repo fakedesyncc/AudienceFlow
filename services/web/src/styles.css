@@ -642,10 +642,19 @@ select:focus {
   grid-template-columns: 42px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
+  width: 100%;
   padding: 12px;
+  color: inherit;
+  text-align: left;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-muted);
+}
+
+.camera-row:hover,
+.camera-row.selected {
+  border-color: var(--university-blue);
+  background: #eef5fb;
 }
 
 .camera-icon {
@@ -758,6 +767,114 @@ select:focus {
   color: #ffffff;
   border-radius: 8px;
   background: var(--university-blue);
+}
+
+.mobile-console {
+  display: grid;
+  gap: 16px;
+}
+
+.mobile-hero-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #ffffff;
+  border: 0;
+  background: linear-gradient(135deg, #102a43 0%, #123d68 62%, #a51e2d 100%);
+}
+
+.mobile-hero-panel span {
+  display: block;
+  margin-bottom: 5px;
+  color: #d7e1ec;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mobile-hero-panel h2,
+.mobile-hero-panel p {
+  margin: 0;
+}
+
+.mobile-hero-panel h2 {
+  font-size: 23px;
+  line-height: 1.18;
+}
+
+.mobile-hero-panel p {
+  max-width: 780px;
+  margin-top: 8px;
+  color: #eef5fb;
+  line-height: 1.45;
+}
+
+.mobile-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.mobile-guide {
+  grid-column: 1 / -1;
+}
+
+.device-video,
+.preview-phone-frame {
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #111827;
+}
+
+.device-video {
+  aspect-ratio: 9 / 16;
+  max-height: 560px;
+  object-fit: cover;
+}
+
+.preview-phone-frame {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  margin-bottom: 14px;
+}
+
+.preview-phone-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.mobile-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.wide-light {
+  width: 100%;
+  gap: 8px;
+}
+
+.mobile-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.mobile-guide ol {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+  color: #253041;
+  line-height: 1.45;
 }
 
 .ops-console {
@@ -1182,7 +1299,8 @@ select:focus {
   }
 
   .split-layout,
-  .ops-workspace {
+  .ops-workspace,
+  .mobile-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1347,5 +1465,15 @@ select:focus {
 
   .inspector-count strong {
     font-size: 38px;
+  }
+
+  .mobile-hero-panel {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mobile-actions,
+  .mobile-stats {
+    grid-template-columns: 1fr;
   }
 }

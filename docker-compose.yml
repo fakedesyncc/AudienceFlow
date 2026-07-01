@@ -69,9 +69,12 @@ services:
       GATEWAY_URL: http://ingest-gateway:8081/v1/events
       INGEST_API_KEY: ${INGEST_API_KEY:?INGEST_API_KEY is required}
       ROOM_ID: 1
-      WORKER_ID: docker-simulated-camera
-      CAMERA_SOURCE: simulation
-      DETECTOR: simulation
+      WORKER_ID: docker-sample-video-camera
+      CAMERA_SOURCE: ${CAMERA_SOURCE:-sample}
+      SAMPLE_VIDEO_URL: ${SAMPLE_VIDEO_URL:-https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/people-detection.mp4}
+      VIDEO_LOOP: "true"
+      SOURCE_RECONNECT_SECONDS: 3
+      DETECTOR: ${DETECTOR:-hog}
       SEND_INTERVAL_SECONDS: 5
       STABILIZATION_WINDOW: 5
       PREVIEW_ENABLED: "true"

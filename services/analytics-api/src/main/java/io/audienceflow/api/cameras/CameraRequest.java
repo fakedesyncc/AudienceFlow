@@ -10,7 +10,7 @@ public record CameraRequest(
         @Positive int roomId,
         @NotBlank @Size(max = 120) String name,
         @NotBlank @Size(max = 1000) String sourceUrl,
-        @NotBlank @Pattern(regexp = "rtsp|http|device|simulation") String streamType,
+        @NotBlank @Pattern(regexp = "rtsp|http|mjpeg|device|file|sample|simulation") String streamType,
         @NotBlank @Pattern(regexp = "online|offline|maintenance") String status,
         @NotNull Boolean enabled
 ) {

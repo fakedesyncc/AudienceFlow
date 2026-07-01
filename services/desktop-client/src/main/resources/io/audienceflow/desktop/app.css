@@ -372,7 +372,7 @@
 }
 
 .video-stage {
-    -fx-min-height: 520px;
+    -fx-min-height: 360px;
     -fx-background-color: #15110f;
     -fx-background-radius: 14px;
     -fx-border-color: #2f2925;
@@ -399,15 +399,15 @@
 }
 
 .camera-controls {
-    -fx-pref-width: 350px;
-    -fx-max-width: 380px;
+    -fx-pref-width: 320px;
+    -fx-max-width: 360px;
 }
 
 .controls-scroll {
     -fx-background-color: transparent;
     -fx-border-color: transparent;
     -fx-padding: 0;
-    -fx-pref-width: 382px;
+    -fx-pref-width: 350px;
 }
 
 .controls-scroll > .viewport {
@@ -430,6 +430,17 @@
     -fx-font-size: 28px;
     -fx-font-weight: 900;
     -fx-text-fill: #c2410c;
+}
+
+.source-note {
+    -fx-text-fill: #6b7788;
+    -fx-font-size: 12px;
+    -fx-line-spacing: 3px;
+    -fx-background-color: #f6f8fb;
+    -fx-background-radius: 10px;
+    -fx-border-color: #e2e8f0;
+    -fx-border-radius: 10px;
+    -fx-padding: 10px;
 }
 
 .line-field {

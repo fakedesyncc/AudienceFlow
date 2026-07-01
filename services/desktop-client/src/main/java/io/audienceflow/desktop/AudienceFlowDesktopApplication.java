@@ -152,8 +152,8 @@ public final class AudienceFlowDesktopApplication extends Application {
     public void start(Stage primaryStage) {
         stage = primaryStage;
         stage.setTitle("AudienceFlow");
-        stage.setMinWidth(1080);
-        stage.setMinHeight(720);
+        stage.setMinWidth(920);
+        stage.setMinHeight(640);
         showLogin();
     }
 
@@ -358,15 +358,17 @@ public final class AudienceFlowDesktopApplication extends Application {
         previewImageView = new ImageView();
         previewImageView.setPreserveRatio(true);
         previewImageView.setSmooth(true);
-        previewImageView.setFitWidth(900);
+        previewImageView.setFitWidth(820);
 
         Label empty = label("Подключите vision-worker preview, чтобы увидеть live-видео с рамками детекции.", "video-empty");
         StackPane videoStage = new StackPane(empty, previewImageView);
         videoStage.getStyleClass().add("video-stage");
+        previewImageView.fitWidthProperty().bind(videoStage.widthProperty().subtract(36));
         ScrollPane videoScroll = new ScrollPane(videoStage);
         videoScroll.getStyleClass().add("video-scroll");
         videoScroll.setFitToWidth(true);
         videoScroll.setFitToHeight(true);
+        videoScroll.setPannable(true);
 
         previewStatusLabel = label("Preview не подключён", "preview-status");
         previewCountLabel = label("0", "camera-value");
@@ -394,6 +396,7 @@ public final class AudienceFlowDesktopApplication extends Application {
                 cameraStat("Достоверность", previewConfidenceLabel),
                 cameraStat("FPS preview", previewFpsLabel),
                 previewMetaLabel,
+                label("Источник вкладки: preview worker /v1/state. Оперативные карточки и отчёты читают PostgreSQL через Analytics API.", "source-note"),
                 separator(),
                 label("Линия потока", "field-label"),
                 lineRowStart,
@@ -424,13 +427,14 @@ public final class AudienceFlowDesktopApplication extends Application {
         videoPanel.setTop(new HBox(12, icon(Name.CAMERA, 34, 18, "metric-icon"), previewStatusLabel));
         BorderPane.setAlignment(videoPanel.getTop(), Pos.CENTER_LEFT);
 
-        BorderPane view = new BorderPane(videoPanel);
-        view.getStyleClass().add("content");
         ScrollPane controlsScroll = new ScrollPane(controls);
         controlsScroll.getStyleClass().add("controls-scroll");
         controlsScroll.setFitToWidth(true);
-        BorderPane.setMargin(controlsScroll, new Insets(0, 0, 0, 16));
-        view.setRight(controlsScroll);
+        SplitPane split = new SplitPane(videoPanel, controlsScroll);
+        split.setDividerPositions(0.74);
+
+        BorderPane view = new BorderPane(split);
+        view.getStyleClass().add("content");
         return view;
     }
 
@@ -651,22 +655,24 @@ public final class AudienceFlowDesktopApplication extends Application {
         BorderPane view = new BorderPane(panel("Камеры и источники", table));
         view.getStyleClass().add("content");
         if (canManageInfrastructure()) {
-            Node form = buildCameraForm();
+            Node form = buildCameraForm(table);
             BorderPane.setMargin(form, new Insets(0, 0, 0, 16));
             view.setRight(form);
         }
         return view;
     }
 
-    private Node buildCameraForm() {
+    private Node buildCameraForm(TableView<Camera> table) {
         ComboBox<Room> room = new ComboBox<>(roomRows);
         TextField name = new TextField();
         TextField source = new TextField();
-        ComboBox<String> streamType = new ComboBox<>(FXCollections.observableArrayList("rtsp", "http", "device", "simulation"));
+        ComboBox<String> streamType = new ComboBox<>(FXCollections.observableArrayList("rtsp", "http", "mjpeg", "device", "file", "sample", "simulation"));
         ComboBox<String> status = new ComboBox<>(FXCollections.observableArrayList("online", "offline", "maintenance"));
         CheckBox enabled = new CheckBox("Включена");
         Button submit = new Button("Подключить камеру");
+        Button reset = new Button("Новая запись");
         submit.setGraphic(icon(Name.CAMERA, "on-primary"));
+        reset.setGraphic(icon(Name.PLUS, "button-icon"));
 
         room.setConverter(new StringConverter<>() {
             @Override
@@ -683,8 +689,36 @@ public final class AudienceFlowDesktopApplication extends Application {
         status.getSelectionModel().select("offline");
         enabled.setSelected(true);
         name.setPromptText("Камера входной зоны");
-        source.setPromptText("rtsp://camera-host/live");
+        source.setPromptText("sample, device:0, phone:http://host/video, rtsp://...");
         submit.getStyleClass().add("primary-button");
+        reset.getStyleClass().add("secondary-button");
+
+        table.getSelectionModel().selectedItemProperty().addListener((observable, oldValue, selected) -> {
+            if (selected == null) {
+                submit.setText("Подключить камеру");
+                return;
+            }
+            roomRows.stream()
+                    .filter(candidate -> candidate.id() == selected.roomId())
+                    .findFirst()
+                    .ifPresent(value -> room.getSelectionModel().select(value));
+            name.setText(selected.name());
+            source.setText(selected.sourceUrl() == null ? "" : selected.sourceUrl());
+            streamType.getSelectionModel().select(selected.streamType());
+            status.getSelectionModel().select(selected.status());
+            enabled.setSelected(selected.enabled());
+            submit.setText("Сохранить источник");
+        });
+
+        reset.setOnAction(event -> {
+            table.getSelectionModel().clearSelection();
+            name.clear();
+            source.clear();
+            streamType.getSelectionModel().select("rtsp");
+            status.getSelectionModel().select("offline");
+            enabled.setSelected(true);
+            submit.setText("Подключить камеру");
+        });
 
         submit.setOnAction(event -> {
             Room selectedRoom = room.getSelectionModel().getSelectedItem();
@@ -700,12 +734,18 @@ public final class AudienceFlowDesktopApplication extends Application {
                     status.getValue(),
                     enabled.isSelected()
             );
-            execute(apiClient.createCamera(payload), created -> {
+            Camera selectedCamera = table.getSelectionModel().getSelectedItem();
+            CompletableFuture<Camera> operation = selectedCamera == null
+                    ? apiClient.createCamera(payload)
+                    : apiClient.updateCamera(selectedCamera.id(), payload);
+            execute(operation, created -> {
                 name.clear();
                 source.clear();
                 status.getSelectionModel().select("offline");
+                table.getSelectionModel().clearSelection();
+                submit.setText("Подключить камеру");
                 refreshData(true);
-            }, "Камера добавлена");
+            }, selectedCamera == null ? "Камера добавлена" : "Источник камеры обновлён");
         });
 
         return formPanel("Новая камера", new Node[]{
@@ -715,6 +755,7 @@ public final class AudienceFlowDesktopApplication extends Application {
                 field("Тип потока", streamType),
                 field("Статус", status),
                 enabled,
+                reset,
                 submit
         });
     }
@@ -736,6 +777,17 @@ public final class AudienceFlowDesktopApplication extends Application {
         submit.setGraphic(icon(Name.USER, "on-primary"));
 
         role.getSelectionModel().select(Role.TEACHER);
+        role.setConverter(new StringConverter<>() {
+            @Override
+            public String toString(Role value) {
+                return value == null ? "" : roleLabel(value);
+            }
+
+            @Override
+            public Role fromString(String value) {
+                return null;
+            }
+        });
         email.setPromptText("name@example.edu");
         displayName.setPromptText("Фамилия Имя");
         password.setPromptText("Минимум 14 символов, 3 класса символов");
@@ -1191,7 +1243,7 @@ public final class AudienceFlowDesktopApplication extends Application {
         if (session == null || userLabel == null) {
             return;
         }
-        userLabel.setText(session.user().displayName() + "\n" + roleLabel(session.user().role()));
+        userLabel.setText(displayNameWithoutRole(session.user().displayName(), session.user().role()) + "\n" + roleLabel(session.user().role()));
     }
 
     private boolean canManageInfrastructure() {
@@ -1548,8 +1600,21 @@ public final class AudienceFlowDesktopApplication extends Application {
         return switch (streamType) {
             case "rtsp" -> "RTSP";
             case "http" -> "HTTP";
+            case "mjpeg" -> "MJPEG";
             case "device" -> "Device";
+            case "file" -> "File";
+            case "sample" -> "Sample";
             default -> "Simulation";
         };
+    }
+
+    private String displayNameWithoutRole(String displayName, Role role) {
+        String name = displayName == null || displayName.isBlank() ? "Пользователь" : displayName.trim();
+        String label = roleLabel(role).toLowerCase(Locale.ROOT);
+        if (name.toLowerCase(Locale.ROOT).startsWith(label)) {
+            String trimmed = name.substring(roleLabel(role).length()).trim();
+            return trimmed.isBlank() ? roleLabel(role) : trimmed;
+        }
+        return name;
     }
 }

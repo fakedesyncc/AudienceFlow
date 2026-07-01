@@ -104,6 +104,10 @@ public final class AudienceFlowApiClient {
         return post("/cameras", payload, Camera.class);
     }
 
+    public CompletableFuture<Camera> updateCamera(int id, CameraRequest payload) {
+        return put("/cameras/" + id, payload, Camera.class);
+    }
+
     public CompletableFuture<List<UserView>> users() {
         return get("/admin/users", new TypeReference<>() {
         });
@@ -141,6 +145,16 @@ public final class AudienceFlowApiClient {
                 request(path)
                         .header("Content-Type", "application/json")
                         .POST(jsonBody(payload))
+                        .build(),
+                type
+        );
+    }
+
+    private <T> CompletableFuture<T> put(String path, Object payload, Class<T> type) {
+        return send(
+                request(path)
+                        .header("Content-Type", "application/json")
+                        .PUT(jsonBody(payload))
                         .build(),
                 type
         );

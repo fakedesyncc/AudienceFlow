@@ -20,6 +20,8 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
+DEFAULT_SAMPLE_VIDEO_URL = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/people-detection.mp4"
+
 
 class Detector(Protocol):
     def detect(self, frame: Any | None) -> "DetectionResult":
@@ -100,6 +102,10 @@ class Config:
     preview_width: int
     preview_jpeg_quality: int
     line_config: tuple[int, int, int, int] | None
+    sample_video_url: str
+    video_loop: bool
+    source_reconnect_seconds: float
+    source_read_failure_limit: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -121,6 +127,10 @@ class Config:
             preview_width=int(env("PREVIEW_WIDTH", "960")),
             preview_jpeg_quality=int(env("PREVIEW_JPEG_QUALITY", "82")),
             line_config=parse_line_config(env("LINE_CONFIG", "")),
+            sample_video_url=env("SAMPLE_VIDEO_URL", DEFAULT_SAMPLE_VIDEO_URL),
+            video_loop=env_bool("VIDEO_LOOP", "true"),
+            source_reconnect_seconds=float(env("SOURCE_RECONNECT_SECONDS", "3")),
+            source_read_failure_limit=int(env("SOURCE_READ_FAILURE_LIMIT", "12")),
         )
 
     def validate(self) -> None:
@@ -142,6 +152,23 @@ class Config:
             raise ValueError("PREVIEW_WIDTH must be at least 320")
         if not 20 <= self.preview_jpeg_quality <= 95:
             raise ValueError("PREVIEW_JPEG_QUALITY must be between 20 and 95")
+        if self.source_reconnect_seconds <= 0:
+            raise ValueError("SOURCE_RECONNECT_SECONDS must be positive")
+        if self.source_read_failure_limit < 1:
+            raise ValueError("SOURCE_READ_FAILURE_LIMIT must be positive")
+
+
+@dataclass(frozen=True)
+class VideoSource:
+    raw: str
+    capture_source: int | str
+    kind: str
+    label: str
+    loop: bool
+
+    @property
+    def is_live(self) -> bool:
+        return self.kind in {"device", "rtsp", "mjpeg", "phone"}
 
 
 class CountStabilizer:
@@ -395,7 +422,7 @@ class PreviewServer:
             "ready": False,
             "worker_id": cfg.worker_id,
             "room_id": cfg.room_id,
-            "source": cfg.camera_source,
+            "source": source_label(cfg),
             "detector": cfg.detector,
             "count": 0,
             "raw_count": 0,
@@ -478,6 +505,11 @@ class PreviewServer:
                     return
                 self.send_error(404)
 
+            def do_OPTIONS(self) -> None:
+                self.send_response(204)
+                self._send_cors_headers()
+                self.end_headers()
+
             def do_POST(self) -> None:
                 parsed = urlparse(self.path)
                 if not preview._authorized(self.path, self.headers):
@@ -518,6 +550,7 @@ class PreviewServer:
             def _send_json(self, payload: dict[str, Any]) -> None:
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -525,6 +558,7 @@ class PreviewServer:
 
             def _send_frame(self, jpeg: bytes) -> None:
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(jpeg)))
@@ -534,6 +568,7 @@ class PreviewServer:
             def _send_stream(self) -> None:
                 boundary = "audienceflow"
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={boundary}")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
@@ -555,6 +590,11 @@ class PreviewServer:
 
             def log_message(self, format: str, *args: Any) -> None:
                 return
+
+            def _send_cors_headers(self) -> None:
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Preview-Token")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
         return Handler
 
@@ -601,7 +641,7 @@ def main() -> int:
         "event": "worker_started",
         "worker_id": cfg.worker_id,
         "room_id": cfg.room_id,
-        "source": cfg.camera_source,
+        "source": source_label(cfg),
         "detector": cfg.detector,
     }, ensure_ascii=False), flush=True)
 
@@ -653,20 +693,56 @@ def run_camera_loop(
 ) -> int:
     import cv2
 
-    source: int | str = int(cfg.camera_source) if cfg.camera_source.isdigit() else cfg.camera_source
-    capture = cv2.VideoCapture(source)
-    if not capture.isOpened():
-        raise RuntimeError(f"Cannot open camera source: {cfg.camera_source}")
+    source = resolve_video_source(cfg)
+    print(json.dumps({
+        "event": "source_resolved",
+        "kind": source.kind,
+        "source": source.label,
+        "loop": source.loop,
+    }, ensure_ascii=False), flush=True)
 
     last_sent = 0.0
     last_frame_at = time.monotonic()
-    try:
+    while True:
+        capture = cv2.VideoCapture(source.capture_source)
+        if not capture.isOpened():
+            print(json.dumps({
+                "event": "source_open_failed",
+                "kind": source.kind,
+                "source": source.label,
+                "retry_seconds": cfg.source_reconnect_seconds,
+            }, ensure_ascii=False), file=sys.stderr, flush=True)
+            time.sleep(cfg.source_reconnect_seconds)
+            continue
+
+        read_failures = 0
         while True:
             ok, frame = capture.read()
             if not ok:
-                print(json.dumps({"event": "frame_read_failed"}), flush=True)
-                time.sleep(1)
+                if source.loop and not source.is_live:
+                    capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    read_failures = 0
+                    print(json.dumps({
+                        "event": "source_looped",
+                        "kind": source.kind,
+                        "source": source.label,
+                    }, ensure_ascii=False), flush=True)
+                    time.sleep(0.05)
+                    continue
+
+                read_failures += 1
+                print(json.dumps({
+                    "event": "frame_read_failed",
+                    "kind": source.kind,
+                    "source": source.label,
+                    "failures": read_failures,
+                }, ensure_ascii=False), file=sys.stderr, flush=True)
+                if read_failures >= cfg.source_read_failure_limit:
+                    break
+                time.sleep(0.25)
                 continue
+
+            read_failures = 0
 
             result = detector.detect(frame)
             tracked_detections, line_state = line_counter.update(result.detections)
@@ -684,8 +760,14 @@ def run_camera_loop(
             if now - last_sent >= cfg.send_interval_seconds:
                 safe_send(gateway, stable_count, stable_confidence)
                 last_sent = now
-    finally:
         capture.release()
+        print(json.dumps({
+            "event": "source_reconnect",
+            "kind": source.kind,
+            "source": source.label,
+            "retry_seconds": cfg.source_reconnect_seconds,
+        }, ensure_ascii=False), file=sys.stderr, flush=True)
+        time.sleep(cfg.source_reconnect_seconds)
 
 
 def safe_send(gateway: GatewayClient, count: int, confidence: float) -> None:
@@ -1067,7 +1149,7 @@ def preview_state(
     state = {
         "worker_id": cfg.worker_id,
         "room_id": cfg.room_id,
-        "source": cfg.camera_source,
+        "source": source_label(cfg),
         "detector": cfg.detector,
         "count": stable_count,
         "raw_count": result.count,
@@ -1078,6 +1160,74 @@ def preview_state(
     }
     state.update(line_state)
     return state
+
+
+def resolve_video_source(cfg: Config) -> VideoSource:
+    raw = cfg.camera_source.strip()
+    alias, value = split_source_alias(raw)
+    if alias in {"sample", "sample-video", "demo-video"} or raw in {"sample", "sample-video", "demo-video"}:
+        source = value if alias and value else cfg.sample_video_url.strip()
+        return VideoSource(raw=raw, capture_source=source, kind="sample", label=safe_source_label(source), loop=cfg.video_loop)
+    if alias == "device" or value.isdigit():
+        index = int(value)
+        return VideoSource(raw=raw, capture_source=index, kind="device", label=f"device:{index}", loop=False)
+    if alias in {"phone", "mjpeg", "ip"}:
+        return VideoSource(raw=raw, capture_source=value, kind="phone" if alias == "phone" else "mjpeg", label=safe_source_label(value), loop=False)
+
+    parsed = urlparse(value)
+    scheme = parsed.scheme.lower()
+    if scheme == "file":
+        path = Path(parsed.path).expanduser()
+        return VideoSource(raw=raw, capture_source=str(path), kind="file", label=str(path), loop=cfg.video_loop)
+    if scheme == "rtsp":
+        return VideoSource(raw=raw, capture_source=value, kind="rtsp", label=safe_source_label(value), loop=False)
+    if scheme in {"http", "https"}:
+        kind = "mjpeg" if looks_like_mjpeg(value) else "http"
+        return VideoSource(raw=raw, capture_source=value, kind=kind, label=safe_source_label(value), loop=cfg.video_loop and kind == "http")
+
+    path = Path(value).expanduser()
+    if path.exists():
+        return VideoSource(raw=raw, capture_source=str(path), kind="file", label=str(path), loop=cfg.video_loop)
+
+    return VideoSource(raw=raw, capture_source=value, kind="stream", label=safe_source_label(value), loop=False)
+
+
+def split_source_alias(raw: str) -> tuple[str, str]:
+    if ":" not in raw:
+        return "", raw
+    prefix, rest = raw.split(":", 1)
+    prefix = prefix.strip().lower()
+    if prefix in {"device", "phone", "mjpeg", "ip", "sample", "sample-video", "demo-video"}:
+        return prefix, rest.strip()
+    return "", raw
+
+
+def source_label(cfg: Config) -> str:
+    if cfg.camera_source == "simulation" or cfg.detector == "simulation":
+        return "simulation"
+    try:
+        return resolve_video_source(cfg).label
+    except Exception:
+        return safe_source_label(cfg.camera_source)
+
+
+def looks_like_mjpeg(value: str) -> bool:
+    lowered = value.lower()
+    return any(marker in lowered for marker in ("mjpg", "mjpeg", "video.cgi", "videostream.cgi", "ipvideo"))
+
+
+def safe_source_label(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        host = parsed.hostname or parsed.netloc
+        port = f":{parsed.port}" if parsed.port else ""
+        path = parsed.path or ""
+        if len(path) > 60:
+            path = "..." + path[-57:]
+        return f"{parsed.scheme}://{host}{port}{path}"
+    if len(value) > 96:
+        return value[:42] + "..." + value[-42:]
+    return value
 
 
 def parse_preview_addr(value: str) -> tuple[str, int]:

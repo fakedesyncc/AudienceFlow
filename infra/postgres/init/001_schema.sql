@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS cameras (
     room_id      INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,
     source_url   TEXT NOT NULL,
-    stream_type  TEXT NOT NULL DEFAULT 'rtsp' CHECK (stream_type IN ('rtsp', 'http', 'device', 'simulation')),
+    stream_type  TEXT NOT NULL DEFAULT 'rtsp' CHECK (stream_type IN ('rtsp', 'http', 'mjpeg', 'device', 'file', 'sample', 'simulation')),
     status       TEXT NOT NULL DEFAULT 'offline' CHECK (status IN ('online', 'offline', 'maintenance')),
     enabled      BOOLEAN NOT NULL DEFAULT true,
     last_seen_at TIMESTAMPTZ,
@@ -78,7 +78,7 @@ VALUES
 ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO cameras (room_id, name, source_url, stream_type, status)
-SELECT id, 'Симулятор камеры', 'simulation', 'simulation', 'online'
+SELECT id, 'Public sample video', 'sample', 'sample', 'online'
 FROM rooms
 WHERE name = 'Аудитория 305'
 ON CONFLICT (room_id, name) DO NOTHING;
