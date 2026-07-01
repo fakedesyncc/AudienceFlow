@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: services/ingest-gateway/go.mod
+          cache-dependency-path: services/ingest-gateway/go.sum
       - run: go test ./...
 
   analytics-api:
