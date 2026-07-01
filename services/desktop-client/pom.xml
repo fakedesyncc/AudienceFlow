@@ -6,7 +6,7 @@
 
     <groupId>io.audienceflow</groupId>
     <artifactId>desktop-client</artifactId>
-    <version>0.1.0</version>
+    <version>1.0.0</version>
     <name>AudienceFlow Desktop Client</name>
     <description>Native JavaFX monitoring client for AudienceFlow.</description>
 

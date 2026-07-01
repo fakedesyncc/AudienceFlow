@@ -1,19 +1,37 @@
 {
-  "name": "AudienceFlow",
-  "short_name": "AudienceFlow",
-  "description": "Мониторинг аудиторий, камер и посещаемости в реальном времени.",
+  "name": "AULA",
+  "short_name": "AULA",
+  "description": "AULA — система видеоаналитики посещаемости аудиторий: мониторинг залов, камер и загрузки в реальном времени.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#f3f5f8",
-  "theme_color": "#102a43",
+  "background_color": "#FAF7F2",
+  "theme_color": "#D2691E",
   "icons": [
     {
-      "src": "audienceflow-icon.svg",
+      "src": "favicon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "brand/aula-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "brand/aula-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "brand/aula-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

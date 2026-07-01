@@ -158,10 +158,22 @@ public final class AudienceFlowDesktopApplication extends Application {
     @Override
     public void start(Stage primaryStage) {
         stage = primaryStage;
-        stage.setTitle("AudienceFlow");
+        stage.setTitle("AULA");
+        applyWindowIcon(stage);
         stage.setMinWidth(920);
         stage.setMinHeight(640);
         showLogin();
+    }
+
+    private void applyWindowIcon(Stage target) {
+        if (!target.getIcons().isEmpty()) {
+            return;
+        }
+        java.io.InputStream iconStream = AudienceFlowDesktopApplication.class
+                .getResourceAsStream("/io/audienceflow/desktop/brand/aula-icon-256.png");
+        if (iconStream != null) {
+            target.getIcons().add(new Image(iconStream));
+        }
     }
 
     @Override
@@ -203,7 +215,9 @@ public final class AudienceFlowDesktopApplication extends Application {
 
         submit.setDefaultButton(true);
 
-        HBox showcaseBrand = new HBox(14, icon(Name.MARK, 38, 24, "brand-icon", "on-dark"), label("AudienceFlow", "showcase-title"));
+        VBox showcaseWordmark = new VBox(2, label("AULA", "showcase-title"), label("by AudienceFlow", "showcase-signature"));
+        showcaseWordmark.setAlignment(Pos.CENTER_LEFT);
+        HBox showcaseBrand = new HBox(14, icon(Name.MARK, 38, 24, "brand-icon", "on-dark"), showcaseWordmark);
         showcaseBrand.setAlignment(Pos.CENTER_LEFT);
 
         VBox showcase = new VBox(22);
@@ -264,7 +278,8 @@ public final class AudienceFlowDesktopApplication extends Application {
         Scene scene = new Scene(root, 1280, 820);
         attachStyles(scene);
         stage.setScene(scene);
-        stage.setTitle("AudienceFlow - " + authSession.user().displayName());
+        stage.setTitle("AULA — " + authSession.user().displayName());
+        applyWindowIcon(stage);
 
         refreshData(true);
         startPolling();
@@ -272,7 +287,9 @@ public final class AudienceFlowDesktopApplication extends Application {
     }
 
     private Node buildSidebar() {
-        HBox brand = new HBox(12, icon(Name.MARK, 34, 22, "brand-icon"), label("AudienceFlow", "sidebar-title"));
+        VBox brandWordmark = new VBox(1, label("AULA", "sidebar-title"), label("by AudienceFlow", "sidebar-signature"));
+        brandWordmark.setAlignment(Pos.CENTER_LEFT);
+        HBox brand = new HBox(12, icon(Name.MARK, 34, 22, "brand-icon"), brandWordmark);
         brand.setAlignment(Pos.CENTER_LEFT);
         Label caption = label("ЛГТУ · операторский контур", "sidebar-caption");
         userLabel = label("", "sidebar-user");
@@ -1227,7 +1244,7 @@ public final class AudienceFlowDesktopApplication extends Application {
 
     private String buildReportCsv() {
         StringBuilder csv = new StringBuilder("\uFEFF");
-        appendCsvRow(csv, "AudienceFlow report");
+        appendCsvRow(csv, "AULA report");
         appendCsvRow(csv, "room_id", String.valueOf(currentReportRoom.id()));
         appendCsvRow(csv, "room", currentReportRoom.name());
         appendCsvRow(csv, "building", currentReportRoom.building());

@@ -112,7 +112,7 @@ jobs:
         if: steps.android.outputs.exists == 'true' && steps.android.outputs.gradle_cmd == 'gradle'
         shell: bash
         run: |
-          GRADLE_VERSION=8.14.3
+          GRADLE_VERSION=9.2.1
           curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$RUNNER_TEMP/gradle.zip"
           unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
@@ -231,4 +231,3 @@ jobs:
             fi
             gh release create "$VERSION" "${ASSETS[@]}" "${FLAGS[@]}"
           fi
-

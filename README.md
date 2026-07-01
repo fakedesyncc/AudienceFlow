@@ -1,11 +1,17 @@
-# AudienceFlow
+![AULA — система видеоаналитики посещаемости](docs/assets/aula-banner.png)
+
+# AULA
+
+**Система видеоаналитики посещаемости аудиторий · by AudienceFlow**
 
 ![CI](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/ci.yml/badge.svg)
 ![GitHub Pages](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/deploy-pages.yml/badge.svg)
 ![Android APK](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/android-apk.yml/badge.svg)
 ![GHCR](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/publish-ghcr.yml/badge.svg)
 
-AudienceFlow — распределённая система подсчёта посещаемости для аудиторий, лабораторий и учебных залов. Проект сделан как практическая инженерная работа: несколько сервисов, понятные границы ответственности, контейнерный запуск, роли пользователей, live-мониторинг и основной desktop-клиент для Windows, macOS и Linux.
+AULA — распределённая система подсчёта посещаемости для аудиторий, лабораторий и учебных залов. Проект сделан как практическая инженерная работа: несколько сервисов, понятные границы ответственности, контейнерный запуск, роли пользователей, live-мониторинг и основной desktop-клиент для Windows, macOS и Linux.
+
+> AULA — продукт; AudienceFlow — платформа и техническое имя (пакеты, репозиторий, каталоги).
 
 Web demo: https://fakedesyncc.github.io/AudienceFlow/
 
@@ -76,6 +82,27 @@ flowchart LR
 - PostgreSQL — временные ряды, индексы и агрегаты.
 
 Подробнее: [docs/architecture.md](docs/architecture.md).
+
+## Дизайн и бренд
+
+<img src="services/web/public/brand/aula-mark.svg" width="40" align="left" hspace="12" alt="Знак AULA">
+
+AULA использует единый визуальный язык **«Warm Signal»**: тёплый янтарь как единственный характерный акцент, глубокий эспрессо для инженерной основы и холодный слейт-тил для данных. Полный контракт — токены, типографика, отступы, тени, доступность — в [docs/design-system.md](docs/design-system.md).
+
+Знак AULA — монограмма «A»: две ножки-арки (аудитория) и перекладина как «линия учёта» с узлами-датчиками на концах (вход/выход).
+
+Ядро палитры (канонические токены):
+
+| Роль | HEX | Применение |
+| --- | --- | --- |
+| Основной акцент | `#D2691E` | Иконки, графики, крупные значения под нагрузкой |
+| Кнопка (фон) | `#B4551A` | Primary-кнопка, белый текст (AA) |
+| Акцентный текст | `#8F420F` | Ссылки, hover, текст на светлом (AA) |
+| Основной текст | `#2A211C` | Заголовки, значения, тело |
+| Фон приложения | `#FAF7F2` | Тёплый холст |
+| Поверхность | `#FFFFFF` | Карточки, панели, поля |
+| Граница | `#E7DFD6` | Тёплые hairline-линии |
+| Данные (холодный) | `#2F6F7A` | Вторая серия графиков, info |
 
 ## Быстрый запуск
 
