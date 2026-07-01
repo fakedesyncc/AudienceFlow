@@ -3,9 +3,9 @@
 ![CI](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/ci.yml/badge.svg)
 ![GitHub Pages](https://github.com/fakedesyncc/AudienceFlow/actions/workflows/deploy-pages.yml/badge.svg)
 
-AudienceFlow — распределённая система подсчёта посещаемости для аудиторий, лабораторий и учебных залов. Проект сделан как практическая инженерная работа: несколько сервисов, понятные границы ответственности, контейнерный запуск, роли пользователей, live-мониторинг и статический деплой операторской панели на GitHub Pages.
+AudienceFlow — распределённая система подсчёта посещаемости для аудиторий, лабораторий и учебных залов. Проект сделан как практическая инженерная работа: несколько сервисов, понятные границы ответственности, контейнерный запуск, роли пользователей, live-мониторинг и основной desktop-клиент для Windows, macOS и Linux.
 
-Сайт: https://fakedesyncc.github.io/AudienceFlow/
+Web demo: https://fakedesyncc.github.io/AudienceFlow/
 
 ## Что умеет
 
@@ -13,6 +13,7 @@ AudienceFlow — распределённая система подсчёта п
 - хранит измерения посещаемости в PostgreSQL;
 - считает текущую загрузку, пики и 5-минутные агрегаты;
 - показывает live-картину по корпусам, аудиториям и камерам;
+- даёт нативный JavaFX desktop-клиент для реального стенда;
 - даёт отдельные рабочие разделы для преподавателей, техников и администраторов;
 - позволяет техникам и админам подключать камеры через панель;
 - выдаёт JWT после логина и не хранит рабочие пароли в репозитории;
@@ -27,9 +28,13 @@ AudienceFlow — распределённая система подсчёта п
 | Техник | Аудитории, камеры, источники потоков, статусы | Добавлять аудитории и камеры, готовить подключение RTSP/HTTP/device |
 | Администратор | Всё, включая пользователей | Управлять пользователями, ролями и инфраструктурой |
 
-## Интерфейс
+## Клиенты
 
-Панель не хранит рабочие секреты и открывается в двух режимах:
+Основной клиент — `services/desktop-client`. Это JavaFX-приложение для Windows, macOS и Linux: вход в API, оперативная таблица аудиторий, KPI, live WebSocket, fallback polling, разделы аудиторий, камер и пользователей.
+
+Web-клиент — `services/web`. Он оставлен как статическая демонстрация для GitHub Pages и быстрого показа интерфейса без backend.
+
+Ни desktop, ни web не хранят рабочие секреты. В web доступны два режима:
 
 - `Презентация` — обезличенный live-контур для быстрого показа интерфейса на GitHub Pages;
 - `API` — подключение к реальному backend по введённому `API URL`, email и паролю.
@@ -50,7 +55,8 @@ flowchart LR
     Worker -->|"HTTP JSON + X-Ingest-Key"| Gateway["Go ingest-gateway"]
     Gateway -->|"batched inserts"| DB[(PostgreSQL)]
     DB --> API["Java Spring Analytics API"]
-    API -->|"REST + WebSocket"| Web["React panel"]
+    API -->|"REST + WebSocket"| Desktop["JavaFX desktop client"]
+    API -->|"REST + WebSocket"| Web["React web demo"]
 ```
 
 Полиглотный стек выбран по назначению, а не ради таблицы в отчёте:
@@ -58,7 +64,8 @@ flowchart LR
 - Python — компьютерное зрение и интеграция с OpenCV/YOLO.
 - Go — быстрый приём событий от worker-ов, backpressure и батчинг.
 - Java/Spring Boot — бизнес-логика, безопасность, роли, REST и live-канал.
-- TypeScript/React — операторская панель, формы, графики и GitHub Pages.
+- Java/JavaFX — основной desktop-клиент под Windows, macOS и Linux.
+- TypeScript/React — демонстрационная web-панель и GitHub Pages.
 - PostgreSQL — временные ряды, индексы и агрегаты.
 
 Подробнее: [docs/architecture.md](docs/architecture.md).
@@ -81,11 +88,17 @@ docker compose up --build
 
 Открыть:
 
-- панель: http://localhost:3000
+- web demo: http://localhost:3000
 - Analytics API: http://localhost:8080/api/health
 - ingest gateway: http://localhost:8081/healthz
 
-На экране входа выбери `API`, укажи `http://localhost:8080/api` и введи сгенерированные email/пароль. Публичный режим `Презентация` не содержит логинов, паролей или токенов и нужен только для показа интерфейса без backend.
+Запустить основной desktop-клиент:
+
+```bash
+make desktop
+```
+
+На экране входа укажи `http://localhost:8080/api` и введи сгенерированные email/пароль. Публичный web-режим `Презентация` не содержит логинов, паролей или токенов и нужен только для показа интерфейса без backend.
 
 Проверить приём события:
 
@@ -95,10 +108,11 @@ make smoke
 
 ## Как показать преподавателю
 
-1. Открой [публичную панель](https://fakedesyncc.github.io/AudienceFlow/) и нажми `Открыть мониторинг`, если нужно быстро показать интерфейс без backend.
-2. Для реального стенда запусти `./scripts/bootstrap-env.sh`, затем `docker compose up --build`.
-3. На экране входа выбери `API`, введи `http://localhost:8080/api` и одну из сгенерированных учётных записей.
+1. Для реального стенда запусти `./scripts/bootstrap-env.sh`, затем `docker compose up --build`.
+2. Запусти desktop-клиент командой `make desktop`.
+3. На экране входа введи `http://localhost:8080/api` и одну из сгенерированных учётных записей.
 4. Отправь событие через `make smoke` или запусти worker, чтобы live-центр обновился.
+5. Если нужно показать только внешний вид без backend, открой [web demo](https://fakedesyncc.github.io/AudienceFlow/).
 
 ## Камера
 
@@ -130,7 +144,9 @@ DETECTOR=yolo YOLO_MODEL=yolov8n.pt python -m app.main
 ## Команды
 
 ```bash
-make test      # Go, Java, Python syntax, React production build
+make test      # Go, Java API, JavaFX client, Python syntax, React build
+make desktop   # запуск JavaFX desktop-клиента
+make desktop-image # runtime-образ desktop-клиента для текущей ОС
 make up        # docker compose up --build
 make worker    # simulated worker profile
 make smoke     # ручное событие в ingest gateway
@@ -148,11 +164,11 @@ make down      # остановить compose stack
 
 Типовые слабые пары логин/пароль не используются. Если `.env` уже существует, скрипт не перезаписывает его без `FORCE=1`.
 
-Frontend не содержит демонстрационных учётных записей. В API-режиме пользователь сам вводит `API URL`, email и пароль. JWT хранится в `sessionStorage`, а не в `localStorage`, поэтому сессия очищается после закрытия браузера.
+Клиенты не содержат демонстрационных учётных записей. Пользователь сам вводит `API URL`, email и пароль. Desktop-клиент не сохраняет пароль после отправки формы входа. В web JWT хранится в `sessionStorage`, а не в `localStorage`, поэтому сессия очищается после закрытия браузера.
 
 ## Деплой
 
-GitHub Pages публикует только статическую панель. Backend остаётся контейнерным и запускается отдельно: локально, на VPS, на университетском сервере или в облаке.
+GitHub Pages публикует только статическую web-демонстрацию. Backend остаётся контейнерным и запускается отдельно: локально, на VPS, на университетском сервере или в облаке. Desktop-клиенты собираются отдельным workflow `Build Desktop Clients`.
 
 Публичная Pages-версия открывает презентационный мониторинг без авторизации. Для реального стенда можно ввести API URL прямо на экране входа. Repository variable `VITE_API_URL` необязательна; она нужна только как предзаполненное значение:
 

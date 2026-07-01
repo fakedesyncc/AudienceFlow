@@ -89,7 +89,7 @@ export function saveRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
 
 export function createPresentationSession(): AuthSession {
   return {
-    token: 'presentation-session',
+    token: presentationToken(),
     user: {
       id: 'presentation',
       email: '',
@@ -101,6 +101,13 @@ export function createPresentationSession(): AuthSession {
     demo: true,
     apiUrl: null,
   };
+}
+
+function presentationToken(): string {
+  if (globalThis.crypto?.randomUUID) {
+    return `presentation-${globalThis.crypto.randomUUID()}`;
+  }
+  return `presentation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export async function login(email: string, password: string, config: RuntimeConfig): Promise<AuthSession> {

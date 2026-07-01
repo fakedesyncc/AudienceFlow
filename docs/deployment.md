@@ -22,7 +22,13 @@
    http://localhost:3000
    ```
 
-4. Проверить ingest вручную:
+4. Запустить основной desktop-клиент:
+
+   ```bash
+   make desktop
+   ```
+
+5. Проверить ingest вручную:
 
    ```bash
    make smoke
@@ -66,7 +72,7 @@ CAMERA_SOURCE=rtsp://your-camera-host:8554/live DETECTOR=hog python -m app.main
 
 ## GitHub Pages
 
-GitHub Pages публикует frontend из workflow `.github/workflows/deploy-pages.yml`.
+GitHub Pages публикует только демонстрационный frontend из workflow `.github/workflows/deploy-pages.yml`.
 
 Сайт проекта:
 
@@ -106,6 +112,32 @@ VITE_API_URL=https://your-api.example.com/api
 После изменения переменной перезапусти `Deploy GitHub Pages`.
 
 JWT хранится в `sessionStorage` браузера. Пароль не сохраняется в приложении.
+
+## Desktop-клиент
+
+Основной клиент находится в `services/desktop-client`. Это JavaFX-приложение: оно подключается к тому же Spring API, показывает live-состояние через WebSocket и не хранит пароль после отправки формы входа.
+
+Запуск из исходников:
+
+```bash
+mvn -f services/desktop-client/pom.xml javafx:run
+```
+
+Сборка runtime-образа для текущей ОС:
+
+```bash
+make desktop-image
+```
+
+Результат появится в:
+
+```text
+services/desktop-client/target/audienceflow-desktop
+```
+
+JavaFX runtime-образ собирается под ту ОС, на которой запущена сборка. Для Windows, macOS и Linux в репозитории есть ручной workflow `Build Desktop Clients`: он запускает matrix-сборку на трёх GitHub Actions runner-ах и прикладывает артефакты к workflow run.
+
+Пароли, JWT secret, ingest key и адреса камер не вшиваются в desktop-сборку. Пользователь вводит `API URL`, email и пароль на экране входа.
 
 ## Где держать backend
 
