@@ -8,13 +8,13 @@ import type {
   LiveAttendanceMessage,
   Room,
   Role,
+  RuntimeConfig,
   TimelinePoint,
   UserView,
 } from './types';
 
-const rawApiUrl = import.meta.env.VITE_API_URL?.trim() ?? '';
-export const API_URL = rawApiUrl.replace(/\/$/, '');
-export const DEMO_MODE = API_URL.length === 0;
+const runtimeConfigKey = 'audienceflow.runtime-config';
+const defaultApiUrl = normalizeApiUrl(import.meta.env.VITE_API_URL?.trim() ?? '');
 
 export const demoAccounts = [
   { role: 'ADMIN' as Role, email: 'af-admin@example.local', password: 'AF-Demo-Admin-2026!' },
@@ -66,24 +66,57 @@ let demoUsers: UserView[] = demoAccounts.map((account, index) => ({
   active: true,
 }));
 
-export async function login(email: string, password: string): Promise<AuthSession> {
-  if (DEMO_MODE) {
+export function loadRuntimeConfig(): RuntimeConfig {
+  const raw = localStorage.getItem(runtimeConfigKey);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as RuntimeConfig;
+      return {
+        mode: parsed.mode === 'api' ? 'api' : 'demo',
+        apiUrl: normalizeApiUrl(parsed.apiUrl ?? ''),
+      };
+    } catch {
+      localStorage.removeItem(runtimeConfigKey);
+    }
+  }
+
+  return defaultApiUrl
+    ? { mode: 'api', apiUrl: defaultApiUrl }
+    : { mode: 'demo', apiUrl: '' };
+}
+
+export function saveRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
+  const normalized = {
+    mode: config.mode,
+    apiUrl: normalizeApiUrl(config.apiUrl),
+  };
+  localStorage.setItem(runtimeConfigKey, JSON.stringify(normalized));
+  return normalized;
+}
+
+export async function login(email: string, password: string, config: RuntimeConfig): Promise<AuthSession> {
+  if (config.mode === 'demo') {
     const account = demoAccounts.find((candidate) => candidate.email === email && candidate.password === password);
     if (!account) {
       throw new Error('Неверные данные входа');
     }
     const user = demoUsers.find((candidate) => candidate.email === account.email)!;
-    return { token: `demo-token-${account.role}`, user, expiresInMinutes: 720, demo: true };
+    return { token: `demo-token-${account.role}`, user, expiresInMinutes: 720, demo: true, apiUrl: null };
   }
 
-  return request<AuthSession>('/auth/login', {
+  const apiUrl = normalizeApiUrl(config.apiUrl);
+  if (!apiUrl) {
+    throw new Error('Укажите API URL');
+  }
+  const session = await requestWithBase<Omit<AuthSession, 'demo' | 'apiUrl'>>(apiUrl, '/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   }, null);
+  return { ...session, demo: false, apiUrl };
 }
 
 export async function fetchCurrent(session: AuthSession): Promise<CurrentAttendance[]> {
-  if (DEMO_MODE) {
+  if (session.demo) {
     return demoRooms.map((room, index) => {
       const count = demoCount(room.id, room.capacity);
       const occupancyPercent = Math.round((count / room.capacity) * 100);
@@ -105,7 +138,7 @@ export async function fetchCurrent(session: AuthSession): Promise<CurrentAttenda
 }
 
 export async function fetchTimeline(session: AuthSession, roomId: number): Promise<TimelinePoint[]> {
-  if (DEMO_MODE) {
+  if (session.demo) {
     const now = Date.now();
     return Array.from({ length: 24 }, (_, index) => {
       const bucket = new Date(now - (23 - index) * 5 * 60_000);
@@ -123,14 +156,14 @@ export async function fetchTimeline(session: AuthSession, roomId: number): Promi
 }
 
 export async function fetchRooms(session: AuthSession): Promise<Room[]> {
-  if (DEMO_MODE) {
+  if (session.demo) {
     return demoRooms;
   }
   return request<Room[]>('/rooms', {}, session);
 }
 
 export async function createRoom(session: AuthSession, payload: CreateRoomPayload): Promise<Room> {
-  if (DEMO_MODE) {
+  if (session.demo) {
     const room = { ...payload, id: nextId(demoRooms) };
     demoRooms = [...demoRooms, room];
     return room;
@@ -139,7 +172,7 @@ export async function createRoom(session: AuthSession, payload: CreateRoomPayloa
 }
 
 export async function fetchCameras(session: AuthSession): Promise<Camera[]> {
-  if (DEMO_MODE) {
+  if (session.demo) {
     const canSeeSource = session.user.role === 'ADMIN' || session.user.role === 'TECHNICIAN';
     return demoCameras.map((camera) => (canSeeSource ? camera : { ...camera, sourceUrl: null }));
   }
@@ -147,7 +180,7 @@ export async function fetchCameras(session: AuthSession): Promise<Camera[]> {
 }
 
 export async function createCamera(session: AuthSession, payload: CreateCameraPayload): Promise<Camera> {
-  if (DEMO_MODE) {
+  if (session.demo) {
     const room = demoRooms.find((candidate) => candidate.id === payload.roomId);
     const camera: Camera = {
       ...payload,
@@ -162,14 +195,14 @@ export async function createCamera(session: AuthSession, payload: CreateCameraPa
 }
 
 export async function fetchUsers(session: AuthSession): Promise<UserView[]> {
-  if (DEMO_MODE) {
+  if (session.demo) {
     return demoUsers;
   }
   return request<UserView[]>('/admin/users', {}, session);
 }
 
 export async function createUser(session: AuthSession, payload: CreateUserPayload): Promise<UserView> {
-  if (DEMO_MODE) {
+  if (session.demo) {
     const user: UserView = {
       id: `demo-${Date.now()}`,
       email: payload.email,
@@ -183,14 +216,14 @@ export async function createUser(session: AuthSession, payload: CreateUserPayloa
   return request<UserView>('/admin/users', { method: 'POST', body: JSON.stringify(payload) }, session);
 }
 
-export function liveSocketUrl(token: string): string | null {
-  if (DEMO_MODE) {
+export function liveSocketUrl(session: AuthSession): string | null {
+  if (session.demo || !session.apiUrl) {
     return null;
   }
-  const url = new URL(API_URL);
+  const url = new URL(session.apiUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = `${url.pathname.replace(/\/$/, '')}/ws/live`;
-  url.searchParams.set('token', token);
+  url.searchParams.set('token', session.token);
   return url.toString();
 }
 
@@ -199,7 +232,19 @@ export function parseLiveMessage(raw: string): LiveAttendanceMessage {
 }
 
 async function request<T>(path: string, init: RequestInit = {}, session: AuthSession | null): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  if (!session?.apiUrl) {
+    throw new Error('API URL не настроен');
+  }
+  return requestWithBase<T>(session.apiUrl, path, init, session);
+}
+
+async function requestWithBase<T>(
+  apiUrl: string,
+  path: string,
+  init: RequestInit = {},
+  session: AuthSession | null,
+): Promise<T> {
+  const response = await fetch(`${apiUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -220,6 +265,10 @@ async function request<T>(path: string, init: RequestInit = {}, session: AuthSes
   }
 
   return response.json() as Promise<T>;
+}
+
+function normalizeApiUrl(value: string): string {
+  return value.trim().replace(/\/$/, '');
 }
 
 function nextId<T extends { id: number }>(items: T[]): number {

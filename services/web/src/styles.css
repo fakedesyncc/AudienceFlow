@@ -583,6 +583,30 @@ select:focus {
   gap: 14px;
 }
 
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.mode-switch button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 6px;
+  color: #41516a;
+  background: transparent;
+  font-weight: 800;
+}
+
+.mode-switch button.selected {
+  color: #ffffff;
+  background: #17202f;
+}
+
 .demo-logins {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
