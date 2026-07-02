@@ -28,16 +28,39 @@ jobs:
           cache: npm
           cache-dependency-path: services/web/package-lock.json
       - run: npm ci
-      - run: npm run build
+      - name: Build demo site
+        run: npm run build:demo
         env:
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_PUBLIC_CONTOUR: demo
           VITE_BASE_PATH: /AudienceFlow/
+          VITE_ENABLE_SW: "false"
+      - name: Stage demo site
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/audienceflow-pages"
+          mkdir -p "$RUNNER_TEMP/audienceflow-pages"
+          cp -R dist/. "$RUNNER_TEMP/audienceflow-pages/"
+      - name: Build work site
+        run: npm run build:work
+        env:
+          VITE_PUBLIC_CONTOUR: work
+          VITE_API_URL: ${{ vars.VITE_WORK_API_URL }}
+          VITE_BASE_PATH: /AudienceFlow/work/
+          VITE_ENABLE_SW: "false"
+      - name: Stage work site
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/audienceflow-pages/work"
+          mkdir -p "$RUNNER_TEMP/audienceflow-pages/work"
+          cp -R dist/. "$RUNNER_TEMP/audienceflow-pages/work/"
       - uses: actions/configure-pages@v6
         with:
           enablement: true
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: services/web/dist
+          path: ${{ runner.temp }}/audienceflow-pages
 
   deploy:
     environment:

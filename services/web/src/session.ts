@@ -1,8 +1,10 @@
 import type { AuthSession } from './types';
+import { demoContourEnabled, publicContour } from './runtime';
 
-export const sessionStorageKey = 'audienceflow.session';
+export const sessionStorageKey = `audienceflow.session.${publicContour}`;
 
 export function restoreSession(): AuthSession | null {
+  localStorage.removeItem('audienceflow.session');
   localStorage.removeItem(sessionStorageKey);
   const raw = window.sessionStorage.getItem(sessionStorageKey);
   if (!raw) {
@@ -10,7 +12,7 @@ export function restoreSession(): AuthSession | null {
   }
   try {
     const parsed = JSON.parse(raw) as AuthSession;
-    if (!parsed.token || !parsed.user || (!parsed.demo && !parsed.apiUrl)) {
+    if (!parsed.token || !parsed.user || parsed.demo !== demoContourEnabled || (!parsed.demo && !parsed.apiUrl)) {
       window.sessionStorage.removeItem(sessionStorageKey);
       return null;
     }

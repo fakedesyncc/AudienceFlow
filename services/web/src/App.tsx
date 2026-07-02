@@ -58,6 +58,7 @@ import {
   updateCamera,
   verifyTeacherAccess,
 } from './api';
+import { demoContourEnabled } from './runtime';
 import { normalizePreviewUrl, restoreSession, sessionStorageKey } from './session';
 import type {
   AuthSession,
@@ -139,17 +140,37 @@ const roleLabels: Record<Role, string> = {
   TEACHER: 'Преподаватель',
 };
 
-const cameraSourcePresets: Array<{
+const operationalCameraSourcePresets: Array<{
   id: string;
   label: string;
   sourceUrl: string;
   streamType: CameraType['streamType'];
 }> = [
-  { id: 'sample', label: 'Public sample video', sourceUrl: 'sample', streamType: 'sample' },
   { id: 'device0', label: 'Камера компьютера device:0', sourceUrl: 'device:0', streamType: 'device' },
   { id: 'phone', label: 'Телефон как IP/MJPEG камера', sourceUrl: 'phone:http://192.168.1.10:8080/video', streamType: 'mjpeg' },
   { id: 'rtsp', label: 'RTSP камера', sourceUrl: 'rtsp://camera-host/live', streamType: 'rtsp' },
   { id: 'file', label: 'Локальный видеофайл', sourceUrl: '/absolute/path/to/video.mp4', streamType: 'file' },
+];
+
+const presentationCameraSourcePresets: typeof operationalCameraSourcePresets =
+  import.meta.env.VITE_PUBLIC_CONTOUR === 'work'
+    ? []
+    : [{ id: 'sample', label: 'Публичное тестовое видео', sourceUrl: 'sample', streamType: 'sample' }];
+
+const cameraSourcePresets = [...presentationCameraSourcePresets, ...operationalCameraSourcePresets];
+const defaultCameraSource = cameraSourcePresets[0];
+const cameraStreamTypeOptions: Array<{ value: CameraType['streamType']; label: string }> = [
+  { value: 'rtsp', label: 'RTSP' },
+  { value: 'http', label: 'HTTP' },
+  { value: 'mjpeg', label: 'MJPEG/IP camera' },
+  { value: 'device', label: 'Device' },
+  { value: 'file', label: 'File' },
+  ...(import.meta.env.VITE_PUBLIC_CONTOUR === 'work'
+    ? []
+    : [
+        { value: 'sample' as const, label: 'Sample video' },
+        { value: 'simulation' as const, label: 'Simulation' },
+      ]),
 ];
 
 export function App() {
@@ -611,6 +632,7 @@ function LoginScreen({
   const [draftConfig, setDraftConfig] = useState(config);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const isPresentationSite = demoContourEnabled;
 
   useEffect(() => {
     setDraftConfig(config);
@@ -634,6 +656,9 @@ function LoginScreen({
   }
 
   function openPresentation() {
+    if (!isPresentationSite) {
+      return;
+    }
     const savedConfig = saveRuntimeConfig({ ...draftConfig, mode: 'demo' });
     onConfigChange(savedConfig);
     const session = createPresentationSession();
@@ -655,12 +680,16 @@ function LoginScreen({
             </div>
           </div>
           <div className="login-showcase-copy">
-            <h2>Система видеоаналитики посещаемости</h2>
-            <p>Живая картина аудиторий, камер и загрузки — спокойно, точно и в реальном времени.</p>
+            <h2>{isPresentationSite ? 'Презентационный мониторинг' : 'Рабочая консоль посещаемости'}</h2>
+            <p>
+              {isPresentationSite
+                ? 'Обезличенная витрина интерфейса без рабочих учётных записей, токенов и подключений.'
+                : 'Защищённый вход в реальный контур с API, расписанием, камерами и ведомостями.'}
+            </p>
           </div>
           <div className="login-showcase-tags">
             <span>Real-time</span>
-            <span>Камеры без магии</span>
+            <span>{isPresentationSite ? 'Без рабочих данных' : 'Только API-контур'}</span>
             <span>ЛГТУ · ИКН</span>
           </div>
         </aside>
@@ -672,29 +701,12 @@ function LoginScreen({
             </div>
             <div>
               <strong>AULA</strong>
-              <span>{draftConfig.mode === 'demo' ? 'Презентационный мониторинг' : 'Защищённый вход'}</span>
+              <span>{isPresentationSite ? 'Презентационный мониторинг' : 'Защищённый вход'}</span>
             </div>
           </div>
 
           <form onSubmit={submit} className="login-form">
-          <div className="mode-switch" role="group" aria-label="Режим подключения">
-            <button
-              type="button"
-              className={draftConfig.mode === 'demo' ? 'selected' : ''}
-              onClick={() => setDraftConfig({ ...draftConfig, mode: 'demo' })}
-            >
-              Презентация
-            </button>
-            <button
-              type="button"
-              className={draftConfig.mode === 'api' ? 'selected' : ''}
-              onClick={() => setDraftConfig({ ...draftConfig, mode: 'api' })}
-            >
-              API
-            </button>
-          </div>
-
-          {draftConfig.mode === 'demo' ? (
+          {isPresentationSite ? (
             <div className="presentation-entry">
               <div className="presentation-icon">
                 <Eye size={22} />
@@ -1997,8 +2009,8 @@ function CamerasView({
   const emptyForm = useMemo<CreateCameraPayload>(() => ({
     roomId: rooms[0]?.id ?? 1,
     name: '',
-    sourceUrl: 'sample',
-    streamType: 'sample',
+    sourceUrl: defaultCameraSource.sourceUrl,
+    streamType: defaultCameraSource.streamType,
     status: 'offline',
     enabled: true,
   }), [rooms]);
@@ -2006,8 +2018,8 @@ function CamerasView({
   const [form, setForm] = useState<CreateCameraPayload>({
     roomId: rooms[0]?.id ?? 1,
     name: '',
-    sourceUrl: 'sample',
-    streamType: 'sample',
+    sourceUrl: defaultCameraSource.sourceUrl,
+    streamType: defaultCameraSource.streamType,
     status: 'offline',
     enabled: true,
   });
@@ -2124,7 +2136,7 @@ function CamerasView({
               <input
                 value={form.sourceUrl}
                 onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })}
-                placeholder="sample, device:0, phone:http://host/video, rtsp://..."
+                placeholder="device:0, phone:http://host/video, rtsp://..."
                 required
               />
             </label>
@@ -2134,13 +2146,11 @@ function CamerasView({
                 value={form.streamType}
                 onChange={(event) => setForm({ ...form, streamType: event.target.value as CameraType['streamType'] })}
               >
-                <option value="rtsp">RTSP</option>
-                <option value="http">HTTP</option>
-                <option value="mjpeg">MJPEG/IP camera</option>
-                <option value="device">Device</option>
-                <option value="file">File</option>
-                <option value="sample">Sample video</option>
-                <option value="simulation">Simulation</option>
+                {cameraStreamTypeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label>

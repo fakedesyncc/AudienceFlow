@@ -115,13 +115,22 @@ python -m app.main analyze ./samples/lecture.mp4 --detector hog --frame-step 5 -
 
 ## GitHub Pages
 
-GitHub Pages публикует только демонстрационный frontend из workflow `.github/workflows/deploy-pages.yml`.
-
-Сайт проекта:
+GitHub Pages публикует два независимых frontend-контура из workflow `.github/workflows/deploy-pages.yml`.
 
 ```text
-https://fakedesyncc.github.io/AudienceFlow/
+https://fakedesyncc.github.io/AudienceFlow/       # demo-витрина
+https://fakedesyncc.github.io/AudienceFlow/work/  # рабочая web-консоль
 ```
+
+Demo-витрина собирается с `VITE_PUBLIC_CONTOUR=demo`: в ней нет рабочих секретов и API-сессия не восстанавливается.
+
+Рабочая консоль собирается с `VITE_PUBLIC_CONTOUR=work`: в bundle не попадают demo-расписание, demo-ключи и mock-аудитории. Для предзаполненного API URL можно задать repository variable:
+
+```text
+VITE_WORK_API_URL=https://your-domain.example/api
+```
+
+Если `VITE_WORK_API_URL` не задан, рабочая консоль всё равно откроется, но пользователь должен ввести `API URL` на экране входа.
 
 Для первого включения Pages в пустом репозитории может потребоваться один раз включить источник `GitHub Actions` в Settings → Pages или выполнить:
 
@@ -132,29 +141,46 @@ gh api -X POST repos/fakedesyncc/AudienceFlow/pages -f build_type=workflow
 После этого push в `main` запускает:
 
 - CI;
-- frontend build;
+- demo frontend build;
+- work frontend build;
 - upload Pages artifact;
 - deploy.
 
-## Подключение реального API к Pages
+## Web build modes
 
-По умолчанию Pages-панель открывает презентационный мониторинг без логинов и паролей. Это нужно потому, что GitHub Pages не запускает backend.
+Локальная demo-сборка:
 
-Чтобы панель ходила в публичный API, можно прямо на экране входа выбрать `API` и ввести:
-
-- API URL;
-- email пользователя;
-- пароль пользователя.
-
-Repository variable можно добавить только для удобства, чтобы API URL был предзаполнен:
-
-```text
-VITE_API_URL=https://your-api.example.com/api
+```bash
+cd services/web
+VITE_PUBLIC_CONTOUR=demo VITE_BASE_PATH=/AudienceFlow/ npm run build:demo
 ```
 
-После изменения переменной перезапусти `Deploy GitHub Pages`.
+Локальная рабочая сборка:
 
-JWT хранится в `sessionStorage` браузера. Пароль не сохраняется в приложении.
+```bash
+cd services/web
+VITE_PUBLIC_CONTOUR=work VITE_BASE_PATH=/ VITE_API_URL=http://localhost:8080/api npm run build:work
+```
+
+Docker image `audienceflow-web` по умолчанию собирает рабочий контур:
+
+```text
+docker build \
+  --build-arg VITE_PUBLIC_CONTOUR=work \
+  --build-arg VITE_API_URL=https://your-domain.example/api \
+  -t audienceflow-web services/web
+```
+
+JWT хранится в `sessionStorage` браузера с отдельным ключом для каждого контура. Пароль не сохраняется в приложении.
+
+## Расписание из Excel
+
+Импорт расписания находится в разделе `Карта и расписание` и доступен администратору/технику. Backend принимает два формата:
+
+- нормализованная таблица с колонками `группа`, `преподаватель`, `дисциплина`, `аудитория`, `день недели`, `время`;
+- широкий файл ЛГТУ вроде `ikn-bak.xlsx`, где на листах стоят пары колонок `Группа ...` / `Аудито рия`, а дисциплина и преподаватель записаны в одной ячейке.
+
+Для широкого формата сервис сам определяет день недели, время пары, группу, аудиторию, тип занятия, корпус и семестр. Если занятие стоит в будущем, аналитика не придумывает фактическую посещаемость: факт появляется только по данным камер.
 
 ## Desktop-клиент
 

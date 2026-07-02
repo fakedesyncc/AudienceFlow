@@ -39,7 +39,7 @@ jobs:
             description: Python vision worker
           - service: web
             context: services/web
-            description: React web demo
+            description: React web console
 
     steps:
       - uses: actions/checkout@v7
@@ -53,7 +53,7 @@ jobs:
         shell: bash
         env:
           PUSH_LATEST_INPUT: ${{ inputs.push_latest }}
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_API_URL: ${{ vars.VITE_WORK_API_URL || vars.VITE_API_URL }}
         run: |
           set -euo pipefail
 
@@ -85,7 +85,9 @@ jobs:
 
           BUILD_ARGS=()
           if [ "${{ matrix.service }}" = "web" ]; then
-            BUILD_ARGS+=(--build-arg "VITE_BASE_PATH=/AudienceFlow/")
+            BUILD_ARGS+=(--build-arg "VITE_BASE_PATH=/")
+            BUILD_ARGS+=(--build-arg "VITE_PUBLIC_CONTOUR=work")
+            BUILD_ARGS+=(--build-arg "VITE_ENABLE_SW=false")
             if [ -n "${VITE_API_URL:-}" ]; then
               BUILD_ARGS+=(--build-arg "VITE_API_URL=${VITE_API_URL}")
             fi
@@ -111,4 +113,3 @@ jobs:
               echo "- \`$tag\`"
             done
           } >> "$GITHUB_STEP_SUMMARY"
-

@@ -40,7 +40,7 @@ public class ScheduleRepository {
                     WHEN 'SPORT' THEN 10
                     WHEN 'CAFE' THEN 11
                     WHEN 'B' THEN 12
-                    WHEN 'C' THEN 13
+                    WHEN 'С' THEN 13
                     ELSE 99
                 END, name
                 """,
