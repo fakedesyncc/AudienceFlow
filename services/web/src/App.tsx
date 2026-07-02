@@ -55,6 +55,7 @@ import {
   parseLiveMessage,
   saveRuntimeConfig,
   updateCamera,
+  verifyTeacherAccess,
 } from './api';
 import { normalizePreviewUrl, restoreSession, sessionStorageKey } from './session';
 import type {
@@ -72,11 +73,12 @@ import type {
   ScheduleDirectory,
   ScheduleEntry,
   ScheduleImportResult,
+  TeacherAccessVerification,
   TimelinePoint,
   UserView,
 } from './types';
 
-type View = 'monitoring' | 'overview' | 'campus' | 'rooms' | 'cameras' | 'mobile' | 'users';
+type View = 'monitoring' | 'overview' | 'campus' | 'journal' | 'rooms' | 'cameras' | 'mobile' | 'users';
 type LiveState = 'presentation' | 'polling' | 'live' | 'offline';
 
 interface TelemetryEvent {
@@ -112,6 +114,21 @@ interface CampusRoomSpec {
   label: string;
   floor: string;
   kind: 'auditorium' | 'service';
+}
+
+interface JournalStudent {
+  id: string;
+  groupId: number;
+  groupName: string;
+  fullName: string;
+  recordBook: string;
+}
+
+interface JournalRecord {
+  studentId: string;
+  present: boolean;
+  points: number;
+  note: string;
 }
 
 const roleLabels: Record<Role, string> = {
@@ -346,6 +363,7 @@ export function App() {
     { id: 'monitoring' as View, label: 'Оперативно', icon: RadioTower, enabled: true },
     { id: 'overview' as View, label: 'Аналитика', icon: Activity, enabled: true },
     { id: 'campus' as View, label: 'Карта', icon: MapPin, enabled: true },
+    { id: 'journal' as View, label: 'Ведомости', icon: BookOpen, enabled: true },
     { id: 'rooms' as View, label: 'Аудитории', icon: DoorOpen, enabled: true },
     { id: 'cameras' as View, label: 'Камеры', icon: Camera, enabled: true },
     { id: 'mobile' as View, label: 'Mobile', icon: Smartphone, enabled: true },
@@ -548,6 +566,13 @@ export function App() {
               onGroupChange={setScheduleGroupId}
               onDimensionChange={setScheduleDimension}
               onImport={handleScheduleImport}
+            />
+          )}
+          {activeView === 'journal' && (
+            <TeacherJournalView
+              session={session}
+              directory={scheduleDirectory}
+              entries={scheduleEntries}
             />
           )}
           {activeView === 'rooms' && (
@@ -1281,22 +1306,26 @@ function CampusScheduleView({
               const buildingEntries = entries.filter((entry) => entry.buildingId === building.id);
               const measuredBuildingEntries = buildingEntries.filter((entry) => entry.actualCount !== null);
               const people = measuredBuildingEntries.reduce((sum, entry) => sum + (entry.actualCount ?? 0), 0);
+              const roomCount = parseCampusRoomSpecs(building).length;
+              const mapPosition = campusBuildingMapPosition(building);
               return (
                 <button
                   type="button"
                   key={building.id}
                   className={building.id === selectedBuildingId ? 'campus-marker selected' : 'campus-marker'}
                   style={{
-                    left: `${building.mapX}%`,
-                    top: `${building.mapY}%`,
+                    left: `${mapPosition.x}%`,
+                    top: `${mapPosition.y}%`,
                     '--marker-color': building.color,
+                    ...campusBuildingFootprint(building.code),
                   } as CSSProperties}
                   onClick={() => onBuildingChange(building.id === selectedBuildingId ? null : building.id)}
-                  title={building.name}
+                  title={`${building.name}: ${building.roomRanges || 'диапазоны уточняются'}`}
                 >
                   <span>{building.code}</span>
-                  <strong>{building.name}</strong>
-                  <small>{buildingEntries.length} зан. · {measuredBuildingEntries.length === 0 ? '—' : people} факт</small>
+                  <strong>{campusBuildingShortName(building)}</strong>
+                  <small>{roomCount} ауд. · {buildingEntries.length} зан.</small>
+                  <b>{measuredBuildingEntries.length === 0 ? '—' : people}</b>
                 </button>
               );
             })}
@@ -1351,15 +1380,15 @@ function CampusScheduleView({
                     </div>
                   ) : (
                     filteredRoomCells.map((cell) => (
-                      <article className={`auditorium-cell ${roomCellStatus(cell)}`} key={cell.key}>
+                      <article className={`auditorium-cell ${roomCellStatus(cell)}`} key={cell.key} title={roomCellTitle(cell)}>
                         <div className="auditorium-cell-top">
-                          <strong>{cell.label}</strong>
-                          <span>{floorLabel(cell.floor)}</span>
+                          <strong>{compactRoomLabel(cell.label)}</strong>
+                          <span>{floorShortLabel(cell.floor)}</span>
                         </div>
                         <p>{roomCellPrimaryText(cell)}</p>
                         <div className="auditorium-cell-meta">
-                          <span>{cell.live ? `${cell.live.count}/${cell.live.capacity}` : cell.trackedRoom ? `план ${cell.trackedRoom.capacity}` : cell.kind === 'service' ? 'сервисная зона' : 'нет live'}</span>
-                          <small>{cell.lessons.length > 0 ? `${cell.lessons.length} зан.` : 'расписания нет'}</small>
+                          <span>{roomCellLoadText(cell)}</span>
+                          <small>{cell.lessons.length > 0 ? `${cell.lessons.length} зан.` : 'без пар'}</small>
                         </div>
                       </article>
                     ))
@@ -1504,6 +1533,292 @@ function CampusScheduleView({
           </section>
         )}
       </section>
+    </div>
+  );
+}
+
+function TeacherJournalView({
+  session,
+  directory,
+  entries,
+}: {
+  session: AuthSession;
+  directory: ScheduleDirectory;
+  entries: ScheduleEntry[];
+}) {
+  const [teacherId, setTeacherId] = useState<number | null>(directory.teachers[0]?.id ?? null);
+  const [groupId, setGroupId] = useState<number | null>(directory.groups[0]?.id ?? null);
+  const [disciplineId, setDisciplineId] = useState<number | null>(directory.disciplines[0]?.id ?? null);
+  const [accessKey, setAccessKey] = useState('');
+  const [verification, setVerification] = useState<TeacherAccessVerification | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [students, setStudents] = useState<JournalStudent[]>(() => seedJournalStudents(directory.groups));
+  const [importText, setImportText] = useState('');
+  const [records, setRecords] = useState<Record<string, JournalRecord>>({});
+
+  useEffect(() => {
+    if (teacherId === null && directory.teachers.length > 0) {
+      setTeacherId(directory.teachers[0].id);
+    }
+    if (groupId === null && directory.groups.length > 0) {
+      setGroupId(directory.groups[0].id);
+    }
+    if (disciplineId === null && directory.disciplines.length > 0) {
+      setDisciplineId(directory.disciplines[0].id);
+    }
+    if (students.length === 0 && directory.groups.length > 0) {
+      setStudents(seedJournalStudents(directory.groups));
+    }
+  }, [directory, disciplineId, groupId, students.length, teacherId]);
+
+  useEffect(() => {
+    setVerification(null);
+    setAccessKey('');
+    setVerifyError(null);
+  }, [teacherId]);
+
+  const selectedTeacher = directory.teachers.find((teacher) => teacher.id === teacherId) ?? null;
+  const selectedGroup = directory.groups.find((group) => group.id === groupId) ?? null;
+  const selectedDiscipline = directory.disciplines.find((discipline) => discipline.id === disciplineId) ?? null;
+  const teacherLessons = teacherId ? entries.filter((entry) => entry.teacherId === teacherId) : [];
+  const groupStudents = students.filter((student) => !groupId || student.groupId === groupId);
+  const journalScope = `${teacherId ?? 't'}:${groupId ?? 'g'}:${disciplineId ?? 'd'}`;
+  const journalRecords = groupStudents.map((student) => records[recordKey(journalScope, student.id)] ?? {
+    studentId: student.id,
+    present: false,
+    points: 0,
+    note: '',
+  });
+  const presentCount = journalRecords.filter((record) => record.present).length;
+  const averagePoints = journalRecords.length === 0
+    ? 0
+    : Math.round((journalRecords.reduce((sum, record) => sum + record.points, 0) / journalRecords.length) * 10) / 10;
+  const verified = Boolean(verification?.verified && verification.teacherId === teacherId);
+
+  async function submitKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!teacherId) {
+      setVerifyError('Выберите преподавателя');
+      return;
+    }
+    setVerifying(true);
+    setVerifyError(null);
+    try {
+      const result = await verifyTeacherAccess(session, teacherId, accessKey);
+      if (!result.verified) {
+        setVerifyError('Ключ не принят');
+        setVerification(null);
+        return;
+      }
+      setVerification(result);
+      setAccessKey('');
+    } catch (err) {
+      setVerifyError(err instanceof Error ? err.message : 'Ключ не принят');
+      setVerification(null);
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  function updateRecord(studentId: string, patch: Partial<JournalRecord>) {
+    setRecords((items) => {
+      const key = recordKey(journalScope, studentId);
+      const current = items[key] ?? { studentId, present: false, points: 0, note: '' };
+      return { ...items, [key]: { ...current, ...patch } };
+    });
+  }
+
+  function importStudentsFromText(text: string) {
+    if (!selectedGroup) {
+      return;
+    }
+    const imported = parseJournalStudents(text, selectedGroup.id, selectedGroup.name);
+    if (imported.length === 0) {
+      return;
+    }
+    setStudents((items) => mergeJournalStudents(items, imported));
+    setImportText('');
+  }
+
+  async function importStudentsFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file) {
+      return;
+    }
+    importStudentsFromText(await file.text());
+  }
+
+  return (
+    <div className="journal-console">
+      <section className="journal-hero panel">
+        <div>
+          <span>Преподавательский контур</span>
+          <h2>Ведомость группы</h2>
+        </div>
+        <ShieldCheck size={30} />
+      </section>
+
+      <section className="journal-access panel">
+        <form onSubmit={(event) => void submitKey(event)} className="journal-access-form">
+          <label>
+            Преподаватель
+            <select value={teacherId ?? ''} onChange={(event) => setTeacherId(event.target.value ? Number(event.target.value) : null)}>
+              {directory.teachers.map((teacher) => (
+                <option key={teacher.id} value={teacher.id}>{teacher.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Ключ преподавателя
+            <input
+              value={accessKey}
+              onChange={(event) => setAccessKey(event.target.value)}
+              type="password"
+              minLength={12}
+              autoComplete="one-time-code"
+              placeholder="Введите выданный ключ"
+            />
+          </label>
+          <button className="primary-button" disabled={verifying || !teacherId}>
+            <KeyRound size={18} />
+            <span>{verified ? 'Проверено' : verifying ? 'Проверка...' : 'Открыть'}</span>
+          </button>
+        </form>
+        <div className={verified ? 'journal-access-state verified' : 'journal-access-state'}>
+          <ShieldCheck size={18} />
+          <span>{verified ? `${verification?.teacherName}` : 'Нужен ключ'}</span>
+        </div>
+        {verifyError && <div className="form-error">{verifyError}</div>}
+      </section>
+
+      {verified && (
+        <>
+          <section className="journal-controls panel">
+            <label>
+              Группа
+              <select value={groupId ?? ''} onChange={(event) => setGroupId(event.target.value ? Number(event.target.value) : null)}>
+                {directory.groups.map((group) => (
+                  <option key={group.id} value={group.id}>{group.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Дисциплина
+              <select value={disciplineId ?? ''} onChange={(event) => setDisciplineId(event.target.value ? Number(event.target.value) : null)}>
+                {directory.disciplines.map((discipline) => (
+                  <option key={discipline.id} value={discipline.id}>{discipline.name}</option>
+                ))}
+              </select>
+            </label>
+            <div className="journal-context">
+              <strong>{selectedGroup?.name ?? 'Группа'}</strong>
+              <span>{selectedDiscipline?.name ?? 'Дисциплина'} · {teacherLessons.length} зан.</span>
+            </div>
+          </section>
+
+          <section className="journal-kpis">
+            <Metric icon={<Users size={20} />} label="Студентов" value={groupStudents.length} accent="teal" />
+            <Metric icon={<Activity size={20} />} label="Присутствуют" value={`${presentCount}/${groupStudents.length}`} accent="blue" />
+            <Metric icon={<BookOpen size={20} />} label="Средний балл" value={averagePoints} accent="amber" />
+            <Metric icon={<ShieldCheck size={20} />} label="Доступ" value="ключ" accent="violet" />
+          </section>
+
+          <section className="journal-grid">
+            <div className="panel journal-table-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Посещение и баллы</h2>
+                  <span>{selectedTeacher?.name}</span>
+                </div>
+                <BookOpen size={20} />
+              </div>
+              <div className="journal-table-wrap">
+                <table className="journal-table">
+                  <thead>
+                    <tr>
+                      <th>Студент</th>
+                      <th>Зачётка</th>
+                      <th>Посещение</th>
+                      <th>Баллы</th>
+                      <th>Комментарий</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupStudents.map((student) => {
+                      const current = records[recordKey(journalScope, student.id)] ?? {
+                        studentId: student.id,
+                        present: false,
+                        points: 0,
+                        note: '',
+                      };
+                      return (
+                        <tr key={student.id}>
+                          <td><strong>{student.fullName}</strong></td>
+                          <td><span className="muted-text">{student.recordBook}</span></td>
+                          <td>
+                            <label className="journal-check">
+                              <input
+                                type="checkbox"
+                                checked={current.present}
+                                onChange={(event) => updateRecord(student.id, { present: event.target.checked })}
+                              />
+                              <span>{current.present ? 'был' : 'нет'}</span>
+                            </label>
+                          </td>
+                          <td>
+                            <input
+                              className="points-input"
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={current.points}
+                              onChange={(event) => updateRecord(student.id, { points: Math.max(0, Math.min(100, Number(event.target.value))) })}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              value={current.note}
+                              onChange={(event) => updateRecord(student.id, { note: event.target.value })}
+                              placeholder="—"
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <aside className="panel journal-import-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Студенты</h2>
+                  <span>{selectedGroup?.name ?? 'Группа не выбрана'}</span>
+                </div>
+                <Upload size={20} />
+              </div>
+              <label className="file-drop compact">
+                <input type="file" accept=".csv,.txt" onChange={(event) => void importStudentsFile(event)} />
+                <Upload size={20} />
+                <span>CSV/TXT</span>
+              </label>
+              <textarea
+                className="journal-import-text"
+                value={importText}
+                onChange={(event) => setImportText(event.target.value)}
+                placeholder="ФИО; зачётка"
+              />
+              <button type="button" className="primary-button" onClick={() => importStudentsFromText(importText)}>
+                <Plus size={18} />
+                <span>Добавить</span>
+              </button>
+            </aside>
+          </section>
+        </>
+      )}
     </div>
   );
 }
@@ -2151,13 +2466,61 @@ function buildStats(current: CurrentAttendance[], cameras: CameraType[]): Dashbo
   const averageOccupancy =
     current.length === 0
       ? 0
-      : Math.round(current.reduce((sum, item) => sum + item.occupancyPercent, 0) / current.length);
+      : Math.round(current.reduce((sum, item) => sum + Math.min(100, item.occupancyPercent), 0) / current.length);
   return {
     rooms: current.length,
     averageOccupancy,
     totalPeople: current.reduce((sum, item) => sum + item.count, 0),
     onlineCameras: cameras.filter((camera) => camera.status === 'online').length,
   };
+}
+
+function seedJournalStudents(groups: ScheduleDirectory['groups']): JournalStudent[] {
+  return groups.flatMap((group) => Array.from({ length: 5 }, (_, index) => ({
+    id: `seed-${group.id}-${index + 1}`,
+    groupId: group.id,
+    groupName: group.name,
+    fullName: `${group.name} · студент ${String(index + 1).padStart(2, '0')}`,
+    recordBook: `${group.name.replace(/\D/g, '').slice(0, 4) || group.id}-${String(index + 1).padStart(3, '0')}`,
+  })));
+}
+
+function parseJournalStudents(text: string, groupId: number, groupName: string): JournalStudent[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const [name, recordBook] = line.split(/[;\t,]/).map((item) => item.trim());
+      return {
+        id: `import-${groupId}-${Date.now()}-${index}`,
+        groupId,
+        groupName,
+        fullName: name || `Студент ${index + 1}`,
+        recordBook: recordBook || `${groupName}-${index + 1}`,
+      };
+    });
+}
+
+function mergeJournalStudents(current: JournalStudent[], imported: JournalStudent[]): JournalStudent[] {
+  const seen = new Set(current.map((student) => journalStudentKey(student)));
+  const next = [...current];
+  imported.forEach((student) => {
+    const key = journalStudentKey(student);
+    if (!seen.has(key)) {
+      seen.add(key);
+      next.push(student);
+    }
+  });
+  return next;
+}
+
+function journalStudentKey(student: JournalStudent): string {
+  return `${student.groupId}:${student.recordBook}:${student.fullName}`.toLocaleLowerCase('ru-RU');
+}
+
+function recordKey(scope: string, studentId: string): string {
+  return `${scope}:${studentId}`;
 }
 
 function statusLabel(status: CurrentAttendance['status']): string {
@@ -2211,6 +2574,8 @@ function viewTitle(view: View): string {
       return 'Центр мониторинга';
     case 'campus':
       return 'Карта и расписание';
+    case 'journal':
+      return 'Ведомости';
     case 'rooms':
       return 'Аудиторный фонд';
     case 'cameras':
@@ -2494,6 +2859,57 @@ function campusRoomSortNumber(value: string): number {
   return numbers.length === 0 ? 9999 : Number(numbers[numbers.length - 1]);
 }
 
+function campusBuildingFootprint(code: string): Record<string, string> {
+  const footprints: Record<string, { width: number; height: number }> = {
+    K1: { width: 96, height: 58 },
+    K2: { width: 96, height: 58 },
+    K3: { width: 88, height: 54 },
+    K4: { width: 88, height: 54 },
+    K5: { width: 102, height: 60 },
+    K9: { width: 108, height: 64 },
+    AUD: { width: 92, height: 58 },
+    ADM: { width: 100, height: 66 },
+    DORM: { width: 88, height: 54 },
+    SPORT: { width: 98, height: 58 },
+    CAFE: { width: 96, height: 54 },
+    B: { width: 98, height: 56 },
+    C: { width: 88, height: 54 },
+  };
+  const footprint = footprints[code] ?? { width: 90, height: 54 };
+  return {
+    '--building-width': `${footprint.width}px`,
+    '--building-height': `${footprint.height}px`,
+  };
+}
+
+function campusBuildingMapPosition(building: CampusBuilding): { x: number; y: number } {
+  const overrides: Record<string, { x: number; y: number }> = {
+    DORM: { x: 20, y: 70 },
+    B: { x: 76, y: 78 },
+    C: { x: 62, y: 92 },
+  };
+  return overrides[building.code] ?? { x: building.mapX, y: building.mapY };
+}
+
+function campusBuildingShortName(building: CampusBuilding): string {
+  const labels: Record<string, string> = {
+    K1: 'Корп. 1',
+    K2: 'Корп. 2',
+    K3: 'Корп. 3',
+    K4: 'Корп. 4',
+    K5: 'Корп. 5',
+    K9: 'Корп. 9',
+    AUD: 'Ауд.',
+    ADM: 'Админ.',
+    DORM: 'Общ.',
+    SPORT: 'Спорт',
+    CAFE: 'Кафе',
+    B: 'Корп. Б',
+    C: 'Корп. C',
+  };
+  return labels[building.code] ?? building.name;
+}
+
 function floorLabel(floor: string): string {
   if (floor === 'Л') {
     return 'Лекционные';
@@ -2502,6 +2918,16 @@ function floorLabel(floor: string): string {
     return 'Сервис';
   }
   return `${floor} этаж`;
+}
+
+function floorShortLabel(floor: string): string {
+  if (floor === 'Л') {
+    return 'Лекц.';
+  }
+  if (floor === 'Сервис') {
+    return 'Серв.';
+  }
+  return `${floor} эт.`;
 }
 
 function roomCellStatus(cell: CampusRoomCell): CurrentAttendance['status'] | 'planned' | 'service' | 'empty' {
@@ -2517,21 +2943,62 @@ function roomCellStatus(cell: CampusRoomCell): CurrentAttendance['status'] | 'pl
   return 'empty';
 }
 
+function compactRoomLabel(value: string): string {
+  return shortenText(
+    value
+      .replace(/^Аудитория\s+/i, '')
+      .replace(/^Лекционный\s+зал\s+/i, 'Лекц. ')
+      .replace(/^Лаборатория\s+/i, 'Лаб. ')
+      .replace(/^Поточная\s+аудитория\s+/i, 'Поток ')
+      .replace(/\s+корпус$/i, '')
+      .trim(),
+    18,
+  );
+}
+
+function roomCellLoadText(cell: CampusRoomCell): string {
+  if (cell.live) {
+    return `${cell.live.count}/${cell.live.capacity}`;
+  }
+  if (cell.trackedRoom) {
+    return `план ${cell.trackedRoom.capacity}`;
+  }
+  if (cell.kind === 'service') {
+    return 'зона';
+  }
+  return 'без live';
+}
+
+function roomCellTitle(cell: CampusRoomCell): string {
+  const lesson = cell.lessons[0];
+  if (!lesson) {
+    return cell.label;
+  }
+  return `${cell.label}: ${lesson.disciplineName}, ${lesson.groupName}, ${lesson.teacherName}`;
+}
+
 function roomCellPrimaryText(cell: CampusRoomCell): string {
   if (cell.live) {
-    return `${cell.live.occupancyPercent}% загрузка · ${Math.round(cell.live.confidence * 100)}% доверие`;
+    return `${cell.live.occupancyPercent}% · conf ${Math.round(cell.live.confidence * 100)}%`;
   }
   if (cell.lessons.length > 0) {
     const lesson = cell.lessons[0];
-    return `${formatShortTime(lesson.startsAt)} ${lesson.disciplineName} · ${lesson.groupName}`;
+    return `${formatShortTime(lesson.startsAt)} · ${shortenText(lesson.disciplineName, 22)} · ${lesson.groupName}`;
   }
   if (cell.trackedRoom) {
-    return 'Аудитория заведена в системе, фактического замера пока нет';
+    return 'в системе · ждёт замер';
   }
   if (cell.kind === 'service') {
-    return 'Точка кампуса из официальной схемы';
+    return 'точка кампуса';
   }
-  return 'Аудитория из диапазонов корпуса';
+  return 'из схемы корпуса';
+}
+
+function shortenText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(1, maxLength - 1)).trim()}…`;
 }
 
 function entryStatus(entry: ScheduleEntry): 'normal' | 'warning' | 'full' | 'idle' {

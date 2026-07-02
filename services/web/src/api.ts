@@ -13,6 +13,7 @@ import type {
   ScheduleDirectory,
   ScheduleEntry,
   ScheduleImportResult,
+  TeacherAccessVerification,
   TimelinePoint,
   UserView,
 } from './types';
@@ -87,6 +88,8 @@ const demoBuildings: CampusBuilding[] = [
   campusBuilding(12, 'B', 'Корпус Б', 'Отдельный учебный корпус', 72, 80, '#2F6F7A', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5'),
   campusBuilding(13, 'C', 'Корпус C', 'Отдельный учебный корпус', 66, 86, '#8F420F', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5'),
 ];
+
+demoRooms = expandDemoCampusRooms(demoRooms, demoBuildings);
 
 const demoDirectory: ScheduleDirectory = {
   groups: [
@@ -175,7 +178,7 @@ export async function fetchCurrent(session: AuthSession): Promise<CurrentAttenda
   if (session.demo) {
     return demoRooms.map((room, index) => {
       const count = demoCount(room.id, room.capacity);
-      const occupancyPercent = Math.round((count / room.capacity) * 100);
+      const occupancyPercent = clampPercent((count / room.capacity) * 100);
       return {
         roomId: room.id,
         roomName: room.name,
@@ -183,14 +186,15 @@ export async function fetchCurrent(session: AuthSession): Promise<CurrentAttenda
         floor: room.floor,
         capacity: room.capacity,
         count,
-        confidence: 0.82 + index * 0.03,
+        confidence: 0.82 + (index % 5) * 0.03,
         timestamp: new Date().toISOString(),
         occupancyPercent,
         status: occupancyPercent >= 95 ? 'full' : occupancyPercent >= 80 ? 'warning' : 'normal',
       };
     });
   }
-  return request<CurrentAttendance[]>('/attendance/current', {}, session);
+  return request<CurrentAttendance[]>('/attendance/current', {}, session)
+    .then((items) => items.map(normalizeCurrentAttendance));
 }
 
 export async function fetchTimeline(session: AuthSession, roomId: number): Promise<TimelinePoint[]> {
@@ -294,7 +298,8 @@ export async function fetchSchedule(
   if (params.buildingId) search.set('buildingId', String(params.buildingId));
   if (params.teacherId) search.set('teacherId', String(params.teacherId));
   if (params.groupId) search.set('groupId', String(params.groupId));
-  return request<ScheduleEntry[]>(`/schedule?${search.toString()}`, {}, session);
+  return request<ScheduleEntry[]>(`/schedule?${search.toString()}`, {}, session)
+    .then((items) => items.map(normalizeScheduleEntry));
 }
 
 export async function fetchScheduleAnalytics(
@@ -322,6 +327,26 @@ export async function importScheduleExcel(session: AuthSession, file: File): Pro
   body.append('file', file);
   body.append('source', file.name);
   return request<ScheduleImportResult>('/schedule/import', { method: 'POST', body }, session);
+}
+
+export async function verifyTeacherAccess(
+  session: AuthSession,
+  teacherId: number,
+  accessKey: string,
+): Promise<TeacherAccessVerification> {
+  if (session.demo) {
+    const teacher = demoDirectory.teachers.find((item) => item.id === teacherId);
+    const verified = isTeacherKeyShape(accessKey);
+    return {
+      verified,
+      teacherId,
+      teacherName: teacher?.name ?? 'Преподаватель',
+    };
+  }
+  return request<TeacherAccessVerification>('/teacher-journal/verify', {
+    method: 'POST',
+    body: JSON.stringify({ teacherId, accessKey }),
+  }, session);
 }
 
 export async function fetchUsers(session: AuthSession): Promise<UserView[]> {
@@ -414,6 +439,108 @@ function nextId<T extends { id: number }>(items: T[]): number {
 function demoCount(roomId: number, capacity: number): number {
   const wave = Math.sin(Date.now() / 45_000 + roomId) * 0.25 + 0.52;
   return Math.max(0, Math.min(capacity, Math.round(capacity * wave)));
+}
+
+function isTeacherKeyShape(value: string): boolean {
+  const compact = value.trim();
+  return compact.length >= 12 && /[A-Za-zА-Яа-я]/.test(compact) && /\d/.test(compact);
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function normalizeCurrentAttendance(item: CurrentAttendance): CurrentAttendance {
+  const occupancyPercent = clampPercent(item.occupancyPercent);
+  return {
+    ...item,
+    occupancyPercent,
+    status: occupancyPercent >= 95 ? 'full' : occupancyPercent >= 80 ? 'warning' : 'normal',
+  };
+}
+
+function normalizeScheduleEntry(item: ScheduleEntry): ScheduleEntry {
+  return {
+    ...item,
+    occupancyPercent: item.occupancyPercent === null ? null : clampPercent(item.occupancyPercent),
+  };
+}
+
+function expandDemoCampusRooms(baseRooms: Room[], buildings: CampusBuilding[]): Room[] {
+  const rooms = [...baseRooms];
+  const seen = new Set(baseRooms.map((room) => demoRoomKey(room.building, room.name)));
+  let nextRoomId = nextId(baseRooms);
+
+  buildings.forEach((building) => {
+    demoRoomSpecs(building).forEach((spec) => {
+      const key = demoRoomKey(building.name, spec.label);
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      rooms.push({
+        id: nextRoomId,
+        name: spec.label.match(/^(Л-\d+|9\s+\d+|\d+)$/) ? `Аудитория ${spec.label}` : spec.label,
+        building: building.name,
+        floor: spec.floor,
+        capacity: spec.floor === 'Л' ? 160 : spec.label.startsWith('9 ') ? 64 : 42,
+      });
+      nextRoomId += 1;
+    });
+  });
+
+  return rooms;
+}
+
+function demoRoomSpecs(building: CampusBuilding): Array<{ label: string; floor: string }> {
+  return building.roomRanges
+    .split(',')
+    .map((token) => token.replace(/[–—]/g, '-').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .flatMap((token) => {
+      const prefixedRange = token.match(/^9\s*(\d{3})\s*-\s*(\d{3})$/);
+      if (building.code === 'K9' && prefixedRange) {
+        return demoExpandRange(Number(prefixedRange[1]), Number(prefixedRange[2]))
+          .map((room) => ({ label: `9 ${room}`, floor: String(room).slice(0, 1) }));
+      }
+      const range = token.match(/^(\d{1,3})\s*-\s*(\d{1,3})$/);
+      if (range) {
+        return demoExpandRange(Number(range[1]), Number(range[2]))
+          .map((room) => ({ label: String(room), floor: String(room).slice(0, 1) }));
+      }
+      const prefixedRoom = token.match(/^9\s*(\d{3})$/);
+      if (building.code === 'K9' && prefixedRoom) {
+        return [{ label: `9 ${prefixedRoom[1]}`, floor: prefixedRoom[1].slice(0, 1) }];
+      }
+      const lectureRoom = token.match(/^Л\s*-\s*(\d+)$/i);
+      if (lectureRoom) {
+        return [{ label: `Л-${lectureRoom[1]}`, floor: 'Л' }];
+      }
+      return [];
+    });
+}
+
+function demoExpandRange(start: number, end: number): number[] {
+  if (end < start || end - start > 200) {
+    return [start];
+  }
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+function demoRoomKey(building: string, label: string): string {
+  const normalized = `${building}|${label}`.toLocaleLowerCase('ru-RU').replace(/ё/g, 'е');
+  const lecture = normalized.match(/л\s*-?\s*(\d+)/);
+  if (lecture) {
+    return `${building}|л-${lecture[1]}`.toLocaleLowerCase('ru-RU');
+  }
+  const numbers = normalized.match(/\d+/g);
+  if (numbers?.length) {
+    return `${building}|${numbers[numbers.length - 1].replace(/^0+/, '')}`;
+  }
+  return normalized.replace(/[^\p{L}\p{N}|]+/gu, ' ').trim();
 }
 
 function campusBuilding(
@@ -555,7 +682,7 @@ function demoSchedule(date: string): ScheduleEntry[] {
         floor: room.floor,
         capacity: room.capacity,
         actualCount,
-        occupancyPercent: actualCount === null ? null : Math.round((actualCount / room.capacity) * 100),
+        occupancyPercent: actualCount === null ? null : clampPercent((actualCount / room.capacity) * 100),
         confidence: actualCount === null ? null : 0.84 + (row.id % 4) * 0.03,
         measuredAt: actualCount === null ? null : new Date().toISOString(),
       };

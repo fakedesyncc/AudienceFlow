@@ -94,7 +94,7 @@ public class AttendanceRepository {
     private CurrentAttendance mapCurrent(ResultSet rs, int rowNum) throws SQLException {
         int capacity = rs.getInt("capacity");
         int count = rs.getInt("current_count");
-        int percent = capacity <= 0 ? 0 : (int) Math.round((count * 100.0) / capacity);
+        int percent = capacity <= 0 ? 0 : clampPercent((int) Math.round((count * 100.0) / capacity));
         return new CurrentAttendance(
                 rs.getInt("room_id"),
                 rs.getString("room_name"),
@@ -126,6 +126,10 @@ public class AttendanceRepository {
             return "warning";
         }
         return "normal";
+    }
+
+    private static int clampPercent(int value) {
+        return Math.max(0, Math.min(100, value));
     }
 
     private static Instant toInstant(Timestamp timestamp) {

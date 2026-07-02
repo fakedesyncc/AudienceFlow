@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fetchCampusBuildings, fetchSchedule, liveSocketUrl, parseLiveMessage } from './api';
+import { fetchCampusBuildings, fetchCurrent, fetchSchedule, liveSocketUrl, parseLiveMessage, verifyTeacherAccess } from './api';
 import type { AuthSession } from './types';
 
 function apiSession(overrides: Partial<AuthSession> = {}): AuthSession {
@@ -79,5 +79,20 @@ describe('campus demo data', () => {
     expect(schedule.length).toBeGreaterThan(0);
     expect(schedule.every((entry) => entry.actualCount === null)).toBe(true);
     expect(schedule.every((entry) => entry.occupancyPercent === null)).toBe(true);
+  });
+
+  it('shows the expanded campus room contour in monitoring', async () => {
+    const current = await fetchCurrent(apiSession({ demo: true, apiUrl: null }));
+
+    expect(current.length).toBeGreaterThan(400);
+    expect(current.every((entry) => entry.occupancyPercent >= 0 && entry.occupancyPercent <= 100)).toBe(true);
+  });
+
+  it('does not accept weak teacher journal keys in demo mode', async () => {
+    const rejected = await verifyTeacherAccess(apiSession({ demo: true, apiUrl: null }), 1, 'short');
+    const accepted = await verifyTeacherAccess(apiSession({ demo: true, apiUrl: null }), 1, 'AULA-2026-secure');
+
+    expect(rejected.verified).toBe(false);
+    expect(accepted.verified).toBe(true);
   });
 });
