@@ -167,3 +167,9 @@ export interface ScheduleImportResult {
   skippedRows: number;
   warnings: string[];
 }
+
+export interface TeacherAccessVerification {
+  verified: boolean;
+  teacherId: number;
+  teacherName: string;
+}

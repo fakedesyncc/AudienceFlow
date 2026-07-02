@@ -65,6 +65,22 @@ public class DatabaseCompatibilityRunner implements ApplicationRunner {
                 )
                 """);
         jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS teacher_access_keys (
+                    id           BIGSERIAL PRIMARY KEY,
+                    teacher_id   INTEGER NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
+                    key_hash     TEXT NOT NULL,
+                    label        TEXT NOT NULL DEFAULT '',
+                    active       BOOLEAN NOT NULL DEFAULT true,
+                    last_used_at TIMESTAMPTZ,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE INDEX IF NOT EXISTS idx_teacher_access_keys_teacher
+                ON teacher_access_keys (teacher_id)
+                WHERE active
+                """);
+        jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS disciplines (
                     id          SERIAL PRIMARY KEY,
                     name        TEXT NOT NULL UNIQUE,

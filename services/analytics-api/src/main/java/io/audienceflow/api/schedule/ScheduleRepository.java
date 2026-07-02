@@ -131,7 +131,7 @@ public class ScheduleRepository {
                     COUNT(latest.count)::int AS measured_lessons,
                     COALESCE(round(avg(latest.count)), 0)::int AS average_attendance,
                     COALESCE(max(latest.count), 0)::int AS peak_attendance,
-                    COALESCE(round(avg((latest.count::numeric * 100) / NULLIF(r.capacity, 0)), 1), 0)::float8 AS average_occupancy_percent,
+                    COALESCE(round(avg(LEAST(100, (latest.count::numeric * 100) / NULLIF(r.capacity, 0))), 1), 0)::float8 AS average_occupancy_percent,
                     COALESCE(round(avg(latest.confidence)::numeric, 3), 0)::float8 AS average_confidence
                 FROM schedule_entries se
                 JOIN rooms r ON r.id = se.room_id
@@ -341,7 +341,7 @@ public class ScheduleRepository {
         Integer actualCount = nullableInt(rs, "actual_count");
         Integer occupancyPercent = actualCount == null || capacity <= 0
                 ? null
-                : (int) Math.round((actualCount * 100.0) / capacity);
+                : clampPercent((int) Math.round((actualCount * 100.0) / capacity));
         return new ScheduleEntryView(
                 rs.getLong("id"),
                 rs.getDate("lesson_date").toLocalDate(),
@@ -401,6 +401,10 @@ public class ScheduleRepository {
 
     private static Instant toInstant(Timestamp timestamp) {
         return timestamp == null ? null : timestamp.toInstant();
+    }
+
+    private static int clampPercent(int value) {
+        return Math.max(0, Math.min(100, value));
     }
 
     private enum Dimension {
