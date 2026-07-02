@@ -46,8 +46,16 @@ jobs:
       - run: python -m py_compile services/vision-worker/app/main.py
 
   web:
-    name: React web demo
+    name: React web
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - contour: demo
+            base_path: /AudienceFlow/
+          - contour: work
+            base_path: /AudienceFlow/work/
     defaults:
       run:
         working-directory: services/web
@@ -59,7 +67,12 @@ jobs:
           cache: npm
           cache-dependency-path: services/web/package-lock.json
       - run: npm ci
-      - run: npm run build
+      - run: npm run build:${{ matrix.contour }}
+        env:
+          VITE_PUBLIC_CONTOUR: ${{ matrix.contour }}
+          VITE_BASE_PATH: ${{ matrix.base_path }}
+          VITE_API_URL: ${{ matrix.contour == 'work' && 'https://api.example.edu/api' || '' }}
+          VITE_ENABLE_SW: "false"
 
   desktop-client:
     name: JavaFX desktop client (${{ matrix.os }})

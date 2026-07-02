@@ -10,10 +10,13 @@ import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.DateUtil;
@@ -33,6 +36,29 @@ public class ScheduleImportService {
     private static final DateTimeFormatter TIME_FORMAT = new DateTimeFormatterBuilder()
             .appendPattern("[H:mm][HH:mm][H.mm][HH.mm]")
             .toFormatter(Locale.ROOT);
+    private static final Pattern ACADEMIC_YEAR_PATTERN = Pattern.compile("(20\\d{2})\\s*[-/]\\s*(20\\d{2})");
+    private static final Pattern TEACHER_MARKER_PATTERN = Pattern.compile(
+            "(?iu)(проф\\.|доц\\.|ст\\.\\s*пр\\.|асс\\.|преп\\.|пр\\.)\\s+(.+)$"
+    );
+    private static final List<RoomRange> ROOM_RANGES = List.of(
+            new RoomRange(100, 111, "Корпус 1"),
+            new RoomRange(204, 239, "Корпус 1"),
+            new RoomRange(309, 346, "Корпус 1"),
+            new RoomRange(408, 440, "Корпус 1"),
+            new RoomRange(112, 115, "Корпус 2"),
+            new RoomRange(240, 263, "Корпус 2"),
+            new RoomRange(347, 382, "Корпус 2"),
+            new RoomRange(441, 478, "Корпус 2"),
+            new RoomRange(117, 121, "Корпус 3"),
+            new RoomRange(264, 272, "Корпус 3"),
+            new RoomRange(122, 130, "Корпус 4"),
+            new RoomRange(273, 282, "Корпус 4"),
+            new RoomRange(131, 146, "Корпус 5"),
+            new RoomRange(283, 299, "Корпус 5"),
+            new RoomRange(383, 399, "Корпус 5"),
+            new RoomRange(479, 499, "Корпус 5"),
+            new RoomRange(504, 514, "Корпус 5")
+    );
 
     private final ScheduleRepository scheduleRepository;
     private final DataFormatter formatter = new DataFormatter(Locale.ROOT);
@@ -46,26 +72,91 @@ public class ScheduleImportService {
             return new ScheduleImportResult(0, 0, 0, List.of("Файл пустой"));
         }
         try (InputStream inputStream = file.getInputStream(); Workbook workbook = WorkbookFactory.create(inputStream)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            Header header = findHeader(sheet);
-            if (header == null) {
-                return new ScheduleImportResult(0, 0, 0, List.of("Не найдена строка заголовков"));
-            }
             List<ScheduleRepository.ImportedScheduleRow> rows = new ArrayList<>();
             List<String> warnings = new ArrayList<>();
-            for (int rowIndex = header.rowIndex() + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
-                Row row = sheet.getRow(rowIndex);
-                if (row == null || isBlank(row)) {
+
+            for (int sheetIndex = 0; sheetIndex < workbook.getNumberOfSheets(); sheetIndex++) {
+                Sheet sheet = workbook.getSheetAt(sheetIndex);
+                Header header = findHeader(sheet);
+                if (header != null) {
+                    parseNormalizedSheet(sheet, header, rows, warnings);
                     continue;
                 }
-                try {
-                    rows.add(parseRow(row, header.columns()));
-                } catch (IllegalArgumentException exception) {
-                    warnings.add("Строка " + (rowIndex + 1) + ": " + exception.getMessage());
+
+                WideHeader wideHeader = findWideHeader(sheet);
+                if (wideHeader != null) {
+                    parseWideSheet(sheet, wideHeader, rows, warnings);
                 }
+            }
+
+            if (rows.isEmpty() && warnings.isEmpty()) {
+                warnings.add("Не найдена строка заголовков. Поддерживаются нормализованные таблицы и формат расписания ЛГТУ с колонками групп.");
             }
             int imported = scheduleRepository.importRows(rows, blankTo(source, "excel"));
             return new ScheduleImportResult(rows.size(), imported, warnings.size(), warnings.stream().limit(20).toList());
+        }
+    }
+
+    private void parseNormalizedSheet(
+            Sheet sheet,
+            Header header,
+            List<ScheduleRepository.ImportedScheduleRow> rows,
+            List<String> warnings
+    ) {
+        for (int rowIndex = header.rowIndex() + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row == null || isBlank(row)) {
+                continue;
+            }
+            try {
+                rows.add(parseRow(row, header.columns()));
+            } catch (IllegalArgumentException exception) {
+                warnings.add(sheet.getSheetName() + ", строка " + (rowIndex + 1) + ": " + exception.getMessage());
+            }
+        }
+    }
+
+    private void parseWideSheet(
+            Sheet sheet,
+            WideHeader header,
+            List<ScheduleRepository.ImportedScheduleRow> rows,
+            List<String> warnings
+    ) {
+        SchedulePeriod period = detectPeriod(sheet);
+        String currentWeekday = "";
+        String currentTime = "";
+
+        for (int rowIndex = header.rowIndex() + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row == null || isBlank(row)) {
+                continue;
+            }
+
+            String weekdayCell = cellText(row.getCell(header.weekdayColumn())).trim();
+            String timeCell = cellText(row.getCell(header.timeColumn())).trim();
+            if (!weekdayCell.isBlank()) {
+                currentWeekday = weekdayCell;
+            }
+            if (!timeCell.isBlank()) {
+                currentTime = timeCell;
+            }
+            if (currentWeekday.isBlank() || currentTime.isBlank()) {
+                continue;
+            }
+
+            for (WideGroupColumn groupColumn : header.groups()) {
+                String lessonText = cellText(row.getCell(groupColumn.groupColumn())).trim();
+                String roomText = cellText(row.getCell(groupColumn.roomColumn())).trim();
+                if (lessonText.isBlank() || roomText.isBlank()) {
+                    continue;
+                }
+                try {
+                    rows.add(parseWideRow(groupColumn.groupName(), currentWeekday, currentTime, lessonText, roomText, period));
+                } catch (IllegalArgumentException exception) {
+                    warnings.add(sheet.getSheetName() + ", строка " + (rowIndex + 1) + ", "
+                            + groupColumn.groupName() + ": " + exception.getMessage());
+                }
+            }
         }
     }
 
@@ -83,6 +174,58 @@ public class ScheduleImportService {
             if (columns.containsKey("group") && columns.containsKey("teacher")
                     && columns.containsKey("discipline") && columns.containsKey("room")) {
                 return new Header(rowIndex, columns);
+            }
+        }
+        return null;
+    }
+
+    private WideHeader findWideHeader(Sheet sheet) {
+        for (int rowIndex = sheet.getFirstRowNum(); rowIndex <= Math.min(sheet.getLastRowNum(), 40); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) {
+                continue;
+            }
+
+            Integer weekdayColumn = null;
+            Integer timeColumn = null;
+            List<Integer> groupColumns = new ArrayList<>();
+            List<Integer> roomColumns = new ArrayList<>();
+            for (Cell cell : row) {
+                String text = cellText(cell);
+                String key = canonical(text);
+                if (key.equals("деньнедели") || key.equals("день")) {
+                    weekdayColumn = cell.getColumnIndex();
+                } else if (key.contains("времяначала") || key.equals("время") || key.equals("пара")) {
+                    timeColumn = cell.getColumnIndex();
+                } else if (key.startsWith("группа")) {
+                    groupColumns.add(cell.getColumnIndex());
+                } else if (key.equals("аудитория") || key.equals("аудиторрия") || key.equals("ауд")) {
+                    roomColumns.add(cell.getColumnIndex());
+                }
+            }
+
+            if (weekdayColumn == null || timeColumn == null || groupColumns.isEmpty() || roomColumns.isEmpty()) {
+                continue;
+            }
+
+            roomColumns.sort(Comparator.naturalOrder());
+            List<WideGroupColumn> groups = new ArrayList<>();
+            for (Integer groupColumn : groupColumns) {
+                String groupName = cleanGroupName(cellText(row.getCell(groupColumn)));
+                Integer nextGroupColumn = groupColumns.stream()
+                        .filter(candidate -> candidate > groupColumn)
+                        .min(Integer::compareTo)
+                        .orElse(Integer.MAX_VALUE);
+                Integer roomColumn = roomColumns.stream()
+                        .filter(candidate -> candidate > groupColumn && candidate < nextGroupColumn)
+                        .findFirst()
+                        .orElse(null);
+                if (!groupName.isBlank() && roomColumn != null) {
+                    groups.add(new WideGroupColumn(groupName, groupColumn, roomColumn));
+                }
+            }
+            if (!groups.isEmpty()) {
+                return new WideHeader(rowIndex, weekdayColumn, timeColumn, groups);
             }
         }
         return null;
@@ -127,6 +270,39 @@ public class ScheduleImportService {
         );
     }
 
+    private ScheduleRepository.ImportedScheduleRow parseWideRow(
+            String groupName,
+            String weekday,
+            String timeRange,
+            String lessonText,
+            String roomText,
+            SchedulePeriod period
+    ) {
+        LessonParts lesson = parseLesson(lessonText);
+        RoomParts room = parseRoom(roomText);
+        LocalTime[] range = parseTimeRange(timeRange);
+        return new ScheduleRepository.ImportedScheduleRow(
+                groupName,
+                "Институт компьютерных наук",
+                lesson.teacherName(),
+                "",
+                lesson.disciplineName(),
+                room.roomName(),
+                room.building(),
+                room.floor(),
+                room.capacity(),
+                null,
+                parseWeekday(weekday),
+                "any",
+                range[0],
+                range[1],
+                room.lessonType(),
+                "",
+                period.validFrom(),
+                period.validTo()
+        );
+    }
+
     private LocalTime[] parseTimeRange(Row row, Map<String, Integer> columns) {
         String start = value(row, columns, "start");
         String end = value(row, columns, "end");
@@ -134,6 +310,15 @@ public class ScheduleImportService {
             return new LocalTime[]{parseTime(start), parseTime(end)};
         }
         String range = value(row, columns, "time").replace('–', '-').replace('—', '-');
+        String[] parts = range.split("-");
+        if (parts.length == 2) {
+            return new LocalTime[]{parseTime(parts[0]), parseTime(parts[1])};
+        }
+        throw new IllegalArgumentException("не указано время занятия");
+    }
+
+    private LocalTime[] parseTimeRange(String value) {
+        String range = value.replace('–', '-').replace('—', '-');
         String[] parts = range.split("-");
         if (parts.length == 2) {
             return new LocalTime[]{parseTime(parts[0]), parseTime(parts[1])};
@@ -208,6 +393,161 @@ public class ScheduleImportService {
         }
     }
 
+    private LessonParts parseLesson(String value) {
+        String normalized = value.replace('\n', ' ').replace('\r', ' ').replaceAll("\\s+", " ").trim();
+        if (normalized.isBlank()) {
+            throw new IllegalArgumentException("пустое занятие");
+        }
+
+        Matcher matcher = TEACHER_MARKER_PATTERN.matcher(normalized);
+        if (matcher.find() && matcher.start() > 0) {
+            String discipline = normalized.substring(0, matcher.start()).trim();
+            String teacher = matcher.group(2).trim();
+            return new LessonParts(blankTo(discipline, normalized), blankTo(teacher, "Преподаватель не указан"));
+        }
+        return new LessonParts(normalized, "Преподаватель не указан");
+    }
+
+    private RoomParts parseRoom(String value) {
+        String normalized = value.replace('\n', ' ').replace('\r', ' ').replaceAll("\\s+", " ").trim();
+        if (normalized.isBlank()) {
+            throw new IllegalArgumentException("пустая аудитория");
+        }
+
+        String lessonType = detectLessonType(normalized);
+        String roomName = normalized
+                .replaceAll("(?iu)(^|\\s)(лек|лаб|пр)\\.?(?=\\s|$)", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        roomName = roomName.isBlank() ? normalized : roomName;
+        roomName = normalizeRoomName(roomName);
+        String building = inferBuilding(roomName);
+        String floor = inferFloor(roomName);
+        int capacity = switch (lessonType) {
+            case "лекция" -> 120;
+            case "лабораторная" -> 24;
+            default -> roomName.toLowerCase(Locale.ROOT).contains("спорт") ? 80 : 30;
+        };
+        return new RoomParts(roomName, building, floor, capacity, lessonType);
+    }
+
+    private String detectLessonType(String value) {
+        String normalized = canonical(value);
+        if (normalized.contains("лек")) {
+            return "лекция";
+        }
+        if (normalized.contains("лаб")) {
+            return "лабораторная";
+        }
+        if (normalized.contains("пр")) {
+            return "практика";
+        }
+        return "занятие";
+    }
+
+    private String normalizeRoomName(String value) {
+        String trimmed = value.replace('–', '-').replace('—', '-').trim();
+        if (canonical(trimmed).contains("спортзал")) {
+            return "Спортзал";
+        }
+        Matcher lecture = Pattern.compile("(?iu)^л\\s*-?\\s*(\\d+)$").matcher(trimmed);
+        if (lecture.find()) {
+            return "Л-" + lecture.group(1);
+        }
+        Matcher prefixedNine = Pattern.compile("^9\\s*-\\s*(\\d{3})$").matcher(trimmed);
+        if (prefixedNine.find()) {
+            return "9-" + prefixedNine.group(1);
+        }
+        return trimmed;
+    }
+
+    private String inferBuilding(String roomName) {
+        String lower = roomName.toLowerCase(Locale.ROOT);
+        if (lower.contains("спорт")) {
+            return "Спортивный комплекс";
+        }
+        if (roomName.matches("(?iu)^л-\\d+$")) {
+            return "Аудиторный корпус";
+        }
+        if (roomName.matches("^9[-\\s]?\\d{3}$")) {
+            return "Корпус 9";
+        }
+        if (roomName.matches("(?iu)^б[-\\s]?\\d+.*$")) {
+            return "Корпус Б";
+        }
+        if (roomName.matches("(?iu)^с[-\\s]?\\d+.*$")) {
+            return "Корпус С";
+        }
+        Integer numericRoom = parseLeadingNumber(roomName);
+        if (numericRoom != null) {
+            return ROOM_RANGES.stream()
+                    .filter(range -> range.includes(numericRoom))
+                    .findFirst()
+                    .map(RoomRange::building)
+                    .orElse("Корпус");
+        }
+        return "Корпус";
+    }
+
+    private String inferFloor(String roomName) {
+        if (roomName.matches("(?iu)^л-\\d+$")) {
+            return "Л";
+        }
+        if (roomName.matches("^9[-\\s]?(\\d{3})$")) {
+            return roomName.replaceAll("\\D", "").substring(1, 2);
+        }
+        Integer numericRoom = parseLeadingNumber(roomName);
+        if (numericRoom != null && numericRoom >= 100) {
+            return String.valueOf(String.valueOf(numericRoom).charAt(0));
+        }
+        return "1";
+    }
+
+    private Integer parseLeadingNumber(String value) {
+        Matcher matcher = Pattern.compile("(\\d{3})").matcher(value);
+        if (!matcher.find()) {
+            return null;
+        }
+        return Integer.parseInt(matcher.group(1));
+    }
+
+    private String cleanGroupName(String value) {
+        return value.replace('\n', ' ')
+                .replace('\r', ' ')
+                .replaceAll("(?iu)^\\s*группа\\s+", "")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private SchedulePeriod detectPeriod(Sheet sheet) {
+        StringBuilder text = new StringBuilder();
+        for (int rowIndex = sheet.getFirstRowNum(); rowIndex <= Math.min(sheet.getLastRowNum(), 5); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) {
+                continue;
+            }
+            for (Cell cell : row) {
+                String value = cellText(cell);
+                if (!value.isBlank()) {
+                    text.append(' ').append(value);
+                }
+            }
+        }
+        String normalized = canonical(text.toString());
+        Matcher yearMatcher = ACADEMIC_YEAR_PATTERN.matcher(text);
+        if (yearMatcher.find()) {
+            int startYear = Integer.parseInt(yearMatcher.group(1));
+            int endYear = Integer.parseInt(yearMatcher.group(2));
+            if (normalized.contains("весенний")) {
+                return new SchedulePeriod(LocalDate.of(endYear, 2, 1), LocalDate.of(endYear, 8, 31));
+            }
+            if (normalized.contains("осенний")) {
+                return new SchedulePeriod(LocalDate.of(startYear, 9, 1), LocalDate.of(endYear, 1, 31));
+            }
+        }
+        return new SchedulePeriod(LocalDate.now().minusMonths(1), null);
+    }
+
     private String required(Row row, Map<String, Integer> columns, String key, String label) {
         String value = value(row, columns, key);
         if (value.isBlank()) {
@@ -270,5 +610,26 @@ public class ScheduleImportService {
     }
 
     private record Header(int rowIndex, Map<String, Integer> columns) {
+    }
+
+    private record WideHeader(int rowIndex, int weekdayColumn, int timeColumn, List<WideGroupColumn> groups) {
+    }
+
+    private record WideGroupColumn(String groupName, int groupColumn, int roomColumn) {
+    }
+
+    private record LessonParts(String disciplineName, String teacherName) {
+    }
+
+    private record RoomParts(String roomName, String building, String floor, int capacity, String lessonType) {
+    }
+
+    private record SchedulePeriod(LocalDate validFrom, LocalDate validTo) {
+    }
+
+    private record RoomRange(int start, int end, String building) {
+        private boolean includes(int room) {
+            return room >= start && room <= end;
+        }
     }
 }

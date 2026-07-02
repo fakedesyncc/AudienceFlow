@@ -43,9 +43,14 @@ beforeEach(() => {
 });
 
 describe('restoreSession', () => {
-  it('restores a valid API session', () => {
+  it('uses a contour-specific session key', () => {
+    expect(sessionStorageKey).toBe('audienceflow.session.demo');
+  });
+
+  it('rejects an API session in the demo contour', () => {
     sessionStore.setItem(sessionStorageKey, JSON.stringify(validApiSession));
-    expect(restoreSession()).toEqual(validApiSession);
+    expect(restoreSession()).toBeNull();
+    expect(sessionStore.getItem(sessionStorageKey)).toBeNull();
   });
 
   it('returns null and clears storage for an invalid session (missing token)', () => {

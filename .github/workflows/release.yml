@@ -22,8 +22,18 @@ concurrency:
 
 jobs:
   web:
-    name: Web demo artifact
+    name: Web artifacts
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - contour: demo
+            artifact: audienceflow-web-demo
+            base_path: /AudienceFlow/
+          - contour: work
+            artifact: audienceflow-web-work
+            base_path: /
     defaults:
       run:
         working-directory: services/web
@@ -35,13 +45,15 @@ jobs:
           cache: npm
           cache-dependency-path: services/web/package-lock.json
       - run: npm ci
-      - run: npm run build
+      - run: npm run build:${{ matrix.contour }}
         env:
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
-          VITE_BASE_PATH: /AudienceFlow/
+          VITE_PUBLIC_CONTOUR: ${{ matrix.contour }}
+          VITE_API_URL: ${{ matrix.contour == 'work' && vars.VITE_WORK_API_URL || '' }}
+          VITE_BASE_PATH: ${{ matrix.base_path }}
+          VITE_ENABLE_SW: "false"
       - uses: actions/upload-artifact@v7
         with:
-          name: audienceflow-web
+          name: ${{ matrix.artifact }}
           path: services/web/dist
           if-no-files-found: error
 
@@ -176,7 +188,8 @@ jobs:
           shopt -s nullglob
 
           mkdir -p release-assets
-          tar -C release-input/audienceflow-web -czf release-assets/audienceflow-web.tar.gz .
+          tar -C release-input/audienceflow-web-demo -czf release-assets/audienceflow-web-demo.tar.gz .
+          tar -C release-input/audienceflow-web-work -czf release-assets/audienceflow-web-work.tar.gz .
 
           for dir in release-input/audienceflow-desktop-*; do
             asset="release-assets/$(basename "$dir").tar.gz"
@@ -214,6 +227,7 @@ jobs:
             echo "В релиз входят собранные артефакты:"
             echo
             echo "- web demo для GitHub Pages;"
+            echo "- рабочая web-консоль без demo-данных;"
             echo "- desktop runtime для Linux, macOS и Windows;"
             echo "- Android APK, если в репозитории есть services/mobile-android."
             echo
