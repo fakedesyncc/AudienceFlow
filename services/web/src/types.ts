@@ -91,3 +91,78 @@ export interface LiveAttendanceMessage {
   generatedAt: string;
   rooms: CurrentAttendance[];
 }
+
+export interface CampusBuilding {
+  id: number;
+  code: string;
+  name: string;
+  address: string;
+  mapX: number;
+  mapY: number;
+  color: string;
+  sourceUrl: string | null;
+  updatedAt?: string;
+}
+
+export interface ScheduleDirectoryEntity {
+  id: number;
+  name: string;
+  detail: string;
+}
+
+export interface ScheduleDirectory {
+  groups: ScheduleDirectoryEntity[];
+  teachers: ScheduleDirectoryEntity[];
+  disciplines: ScheduleDirectoryEntity[];
+}
+
+export interface ScheduleEntry {
+  id: number;
+  date: string;
+  weekday: number;
+  weekType: 'any' | 'odd' | 'even' | 'green' | 'white';
+  startsAt: string;
+  endsAt: string;
+  lessonType: string;
+  subgroup: string;
+  roomId: number;
+  roomName: string;
+  building: string;
+  floor: string;
+  buildingId: number | null;
+  buildingCode: string | null;
+  buildingName: string | null;
+  groupId: number;
+  groupName: string;
+  institute: string;
+  teacherId: number;
+  teacherName: string;
+  department: string;
+  disciplineId: number;
+  disciplineName: string;
+  capacity: number;
+  actualCount: number | null;
+  occupancyPercent: number | null;
+  confidence: number | null;
+  measuredAt: string | null;
+}
+
+export interface ScheduleAnalyticsRow {
+  dimension: 'teacher' | 'discipline' | 'group';
+  id: number;
+  name: string;
+  lessons: number;
+  plannedCapacity: number;
+  measuredLessons: number;
+  averageAttendance: number;
+  peakAttendance: number;
+  averageOccupancyPercent: number;
+  averageConfidence: number;
+}
+
+export interface ScheduleImportResult {
+  parsedRows: number;
+  importedRows: number;
+  skippedRows: number;
+  warnings: string[];
+}
