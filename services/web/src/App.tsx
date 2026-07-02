@@ -49,6 +49,7 @@ import {
   fetchTimeline,
   fetchUsers,
   importScheduleExcel,
+  issueTeacherAccessKey,
   loadRuntimeConfig,
   liveSocketUrl,
   login,
@@ -74,6 +75,7 @@ import type {
   ScheduleEntry,
   ScheduleImportResult,
   TeacherAccessVerification,
+  TeacherKeyIssueResponse,
   TimelinePoint,
   UserView,
 } from './types';
@@ -1135,18 +1137,21 @@ function CampusScheduleView({
   const floorPanelRef = useRef<HTMLDivElement | null>(null);
   const activeLessons = entries.filter((entry) => isLessonActive(entry, date));
   const measuredEntries = entries.filter((entry) => entry.actualCount !== null);
-  const scheduledPeople = measuredEntries.reduce((sum, entry) => sum + (entry.actualCount ?? 0), 0);
-  const plannedCapacity = entries.reduce((sum, entry) => sum + entry.capacity, 0);
   const averageOccupancy = measuredEntries.length === 0
     ? 0
     : Math.round(measuredEntries.reduce((sum, entry) => sum + (entry.occupancyPercent ?? 0), 0) / measuredEntries.length);
   const selectedBuilding = selectedBuildingId
     ? buildings.find((building) => building.id === selectedBuildingId) ?? null
     : null;
+  const scopedCurrent = selectedBuilding
+    ? current.filter((item) => campusBuildingMatches(selectedBuilding, item.building))
+    : current;
+  const scopedLivePeople = scopedCurrent.reduce((sum, item) => sum + item.count, 0);
   const campusRoomTotal = useMemo(
     () => buildings.reduce((sum, building) => sum + parseCampusRoomSpecs(building).length, 0),
     [buildings],
   );
+  const selectedBuildingRoomTotal = selectedBuilding ? parseCampusRoomSpecs(selectedBuilding).length : campusRoomTotal;
   const roomCells = useMemo(
     () => (selectedBuilding ? buildCampusRoomCells(selectedBuilding, rooms, current, entries) : []),
     [current, entries, rooms, selectedBuilding],
@@ -1279,14 +1284,10 @@ function CampusScheduleView({
 
       <section className="campus-kpis">
         <Metric icon={<Building2 size={20} />} label="Корпусов" value={buildings.length} accent="teal" />
+        <Metric icon={<DoorOpen size={20} />} label="Аудиторий в фонде" value={selectedBuildingRoomTotal} accent="violet" />
         <Metric icon={<CalendarDays size={20} />} label="Занятий за день" value={entries.length} accent="amber" />
         <Metric icon={<RadioTower size={20} />} label="Идут сейчас" value={activeLessons.length} accent="blue" />
-        <Metric
-          icon={<Users size={20} />}
-          label="Факт / план мест"
-          value={measuredEntries.length === 0 ? `—/${plannedCapacity}` : `${scheduledPeople}/${plannedCapacity}`}
-          accent="violet"
-        />
+        <Metric icon={<Users size={20} />} label="Live-факт камер" value={scopedLivePeople} accent="teal" />
       </section>
 
       <section className="campus-layout">
@@ -1551,8 +1552,11 @@ function TeacherJournalView({
   const [disciplineId, setDisciplineId] = useState<number | null>(directory.disciplines[0]?.id ?? null);
   const [accessKey, setAccessKey] = useState('');
   const [verification, setVerification] = useState<TeacherAccessVerification | null>(null);
+  const [issuedKey, setIssuedKey] = useState<TeacherKeyIssueResponse | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [issueError, setIssueError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [issuing, setIssuing] = useState(false);
   const [students, setStudents] = useState<JournalStudent[]>(() => seedJournalStudents(directory.groups));
   const [importText, setImportText] = useState('');
   const [records, setRecords] = useState<Record<string, JournalRecord>>({});
@@ -1595,6 +1599,8 @@ function TeacherJournalView({
     ? 0
     : Math.round((journalRecords.reduce((sum, record) => sum + record.points, 0) / journalRecords.length) * 10) / 10;
   const verified = Boolean(verification?.verified && verification.teacherId === teacherId);
+  const canIssueTeacherKey = session.demo || session.user.role === 'ADMIN';
+  const issuedKeyMatchesTeacher = Boolean(issuedKey && issuedKey.teacherId === teacherId);
 
   async function submitKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1618,6 +1624,28 @@ function TeacherJournalView({
       setVerification(null);
     } finally {
       setVerifying(false);
+    }
+  }
+
+  async function issueAccessKey() {
+    if (!teacherId) {
+      setIssueError('Выберите преподавателя');
+      return;
+    }
+    setIssuing(true);
+    setIssueError(null);
+    try {
+      const result = await issueTeacherAccessKey(
+        session,
+        teacherId,
+        session.demo ? 'presentation-session' : 'web-console',
+      );
+      setIssuedKey(result);
+    } catch (err) {
+      setIssueError(err instanceof Error ? err.message : 'Не удалось выпустить ключ');
+      setIssuedKey(null);
+    } finally {
+      setIssuing(false);
     }
   }
 
@@ -1661,36 +1689,69 @@ function TeacherJournalView({
       </section>
 
       <section className="journal-access panel">
-        <form onSubmit={(event) => void submitKey(event)} className="journal-access-form">
-          <label>
-            Преподаватель
-            <select value={teacherId ?? ''} onChange={(event) => setTeacherId(event.target.value ? Number(event.target.value) : null)}>
-              {directory.teachers.map((teacher) => (
-                <option key={teacher.id} value={teacher.id}>{teacher.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Ключ преподавателя
-            <input
-              value={accessKey}
-              onChange={(event) => setAccessKey(event.target.value)}
-              type="password"
-              minLength={12}
-              autoComplete="one-time-code"
-              placeholder="Введите выданный ключ"
-            />
-          </label>
-          <button className="primary-button" disabled={verifying || !teacherId}>
-            <KeyRound size={18} />
-            <span>{verified ? 'Проверено' : verifying ? 'Проверка...' : 'Открыть'}</span>
-          </button>
-        </form>
-        <div className={verified ? 'journal-access-state verified' : 'journal-access-state'}>
-          <ShieldCheck size={18} />
-          <span>{verified ? `${verification?.teacherName}` : 'Нужен ключ'}</span>
+        <div className="journal-access-main">
+          <div className="journal-section-head">
+            <div>
+              <strong>Вход преподавателя</strong>
+              <span>Журнал открывается только после проверки персонального ключа.</span>
+            </div>
+            <div className={verified ? 'journal-access-state verified' : 'journal-access-state'}>
+              <ShieldCheck size={18} />
+              <span>{verified ? `${verification?.teacherName}` : 'Нужен ключ'}</span>
+            </div>
+          </div>
+          <form onSubmit={(event) => void submitKey(event)} className="journal-access-form">
+            <label>
+              Преподаватель
+              <select value={teacherId ?? ''} onChange={(event) => setTeacherId(event.target.value ? Number(event.target.value) : null)}>
+                {directory.teachers.map((teacher) => (
+                  <option key={teacher.id} value={teacher.id}>{teacher.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Ключ преподавателя
+              <input
+                value={accessKey}
+                onChange={(event) => setAccessKey(event.target.value)}
+                type="password"
+                minLength={12}
+                autoComplete="one-time-code"
+                placeholder="Введите выданный ключ"
+              />
+            </label>
+            <button className="primary-button" disabled={verifying || !teacherId}>
+              <KeyRound size={18} />
+              <span>{verified ? 'Проверено' : verifying ? 'Проверка...' : 'Открыть'}</span>
+            </button>
+          </form>
+          {verifyError && <div className="form-error">{verifyError}</div>}
         </div>
-        {verifyError && <div className="form-error">{verifyError}</div>}
+
+        {canIssueTeacherKey && (
+          <div className="journal-key-card">
+            <div className="journal-section-head compact">
+              <div>
+                <strong>{session.demo ? 'Демо-ключ' : 'Выдача ключа'}</strong>
+                <span>{session.demo ? 'Сессионный ключ без доступа к реальным данным.' : 'Ключ виден один раз, затем хранится только хэш.'}</span>
+              </div>
+              <KeyRound size={18} />
+            </div>
+            <button type="button" className="icon-button wide-light" onClick={() => void issueAccessKey()} disabled={issuing || !teacherId}>
+              <KeyRound size={17} />
+              <span>{issuing ? 'Генерация...' : 'Выпустить ключ'}</span>
+            </button>
+            {issuedKeyMatchesTeacher && issuedKey && (
+              <div className="issued-key-box">
+                <input value={issuedKey.accessKey} readOnly aria-label="Новый ключ преподавателя" />
+                <button type="button" className="icon-button" onClick={() => setAccessKey(issuedKey.accessKey)} title="Подставить ключ">
+                  <Plus size={17} />
+                </button>
+              </div>
+            )}
+            {issueError && <div className="form-error">{issueError}</div>}
+          </div>
+        )}
       </section>
 
       {verified && (
@@ -2873,7 +2934,7 @@ function campusBuildingFootprint(code: string): Record<string, string> {
     SPORT: { width: 98, height: 58 },
     CAFE: { width: 96, height: 54 },
     B: { width: 98, height: 56 },
-    C: { width: 88, height: 54 },
+    С: { width: 88, height: 54 },
   };
   const footprint = footprints[code] ?? { width: 90, height: 54 };
   return {
@@ -2886,7 +2947,7 @@ function campusBuildingMapPosition(building: CampusBuilding): { x: number; y: nu
   const overrides: Record<string, { x: number; y: number }> = {
     DORM: { x: 20, y: 70 },
     B: { x: 76, y: 78 },
-    C: { x: 62, y: 92 },
+    С: { x: 62, y: 92 },
   };
   return overrides[building.code] ?? { x: building.mapX, y: building.mapY };
 }
@@ -2905,7 +2966,7 @@ function campusBuildingShortName(building: CampusBuilding): string {
     SPORT: 'Спорт',
     CAFE: 'Кафе',
     B: 'Корп. Б',
-    C: 'Корп. C',
+    С: 'Корп. С',
   };
   return labels[building.code] ?? building.name;
 }

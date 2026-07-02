@@ -173,3 +173,9 @@ export interface TeacherAccessVerification {
   teacherId: number;
   teacherName: string;
 }
+
+export interface TeacherKeyIssueResponse {
+  teacherId: number;
+  teacherName: string;
+  accessKey: string;
+}
