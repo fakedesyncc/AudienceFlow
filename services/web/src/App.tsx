@@ -97,6 +97,23 @@ interface PreviewState {
   updated_at: string | null;
 }
 
+interface CampusRoomCell {
+  key: string;
+  label: string;
+  floor: string;
+  kind: 'auditorium' | 'service';
+  trackedRoom?: Room;
+  live?: CurrentAttendance;
+  lessons: ScheduleEntry[];
+}
+
+interface CampusRoomSpec {
+  key: string;
+  label: string;
+  floor: string;
+  kind: 'auditorium' | 'service';
+}
+
 const roleLabels: Record<Role, string> = {
   ADMIN: 'Администратор',
   TECHNICIAN: 'Техник',
@@ -1088,6 +1105,9 @@ function CampusScheduleView({
 }) {
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [selectedFloor, setSelectedFloor] = useState('all');
+  const [roomQuery, setRoomQuery] = useState('');
+  const floorPanelRef = useRef<HTMLDivElement | null>(null);
   const activeLessons = entries.filter((entry) => isLessonActive(entry, date));
   const measuredEntries = entries.filter((entry) => entry.actualCount !== null);
   const scheduledPeople = measuredEntries.reduce((sum, entry) => sum + (entry.actualCount ?? 0), 0);
@@ -1098,6 +1118,62 @@ function CampusScheduleView({
   const selectedBuilding = selectedBuildingId
     ? buildings.find((building) => building.id === selectedBuildingId) ?? null
     : null;
+  const campusRoomTotal = useMemo(
+    () => buildings.reduce((sum, building) => sum + parseCampusRoomSpecs(building).length, 0),
+    [buildings],
+  );
+  const roomCells = useMemo(
+    () => (selectedBuilding ? buildCampusRoomCells(selectedBuilding, rooms, current, entries) : []),
+    [current, entries, rooms, selectedBuilding],
+  );
+  const floorOptions = useMemo(() => campusFloorOptions(roomCells), [roomCells]);
+  const filteredRoomCells = useMemo(() => {
+    const query = normalizeCampusSearch(roomQuery);
+    return roomCells.filter((cell) => {
+      if (selectedFloor !== 'all' && cell.floor !== selectedFloor) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = [
+        cell.label,
+        cell.trackedRoom?.name,
+        cell.live?.roomName,
+        ...cell.lessons.flatMap((lesson) => [
+          lesson.disciplineName,
+          lesson.teacherName,
+          lesson.groupName,
+          lesson.lessonType,
+        ]),
+      ]
+        .filter(Boolean)
+        .join(' ');
+      return normalizeCampusSearch(haystack).includes(query);
+    });
+  }, [roomCells, roomQuery, selectedFloor]);
+
+  useEffect(() => {
+    setSelectedFloor('all');
+    setRoomQuery('');
+  }, [selectedBuildingId]);
+
+  useEffect(() => {
+    if (selectedFloor !== 'all' && !floorOptions.includes(selectedFloor)) {
+      setSelectedFloor('all');
+    }
+  }, [floorOptions, selectedFloor]);
+
+  useEffect(() => {
+    if (!selectedBuildingId) {
+      return;
+    }
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    floorPanelRef.current?.scrollIntoView({
+      block: 'nearest',
+      behavior: prefersReducedMotion ? 'auto' : 'smooth',
+    });
+  }, [selectedBuildingId]);
 
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0];
@@ -1203,7 +1279,8 @@ function CampusScheduleView({
             <div className="map-grid" />
             {buildings.map((building) => {
               const buildingEntries = entries.filter((entry) => entry.buildingId === building.id);
-              const people = buildingEntries.reduce((sum, entry) => sum + (entry.actualCount ?? 0), 0);
+              const measuredBuildingEntries = buildingEntries.filter((entry) => entry.actualCount !== null);
+              const people = measuredBuildingEntries.reduce((sum, entry) => sum + (entry.actualCount ?? 0), 0);
               return (
                 <button
                   type="button"
@@ -1219,25 +1296,100 @@ function CampusScheduleView({
                 >
                   <span>{building.code}</span>
                   <strong>{building.name}</strong>
-                  <small>{buildingEntries.length} зан. · {people || '—'} факт</small>
+                  <small>{buildingEntries.length} зан. · {measuredBuildingEntries.length === 0 ? '—' : people} факт</small>
                 </button>
               );
             })}
           </div>
           <div className="campus-map-summary">
-            <span>{rooms.length} аудиторий в контуре</span>
+            <span>{campusRoomTotal} аудиторий и точек кампуса</span>
             <span>{measuredEntries.length === 0 ? 'нет фактических замеров' : `${averageOccupancy}% средняя загрузка`}</span>
             <span>{current.length} live-точек посещаемости</span>
           </div>
+          <div className="building-floor-panel" ref={floorPanelRef}>
+            {selectedBuilding ? (
+              <>
+                <div className="floor-panel-header">
+                  <div>
+                    <h3>Навигация по корпусу</h3>
+                    <span>{selectedBuilding.name} · {selectedBuilding.roomRanges || 'диапазоны аудиторий уточняются'}</span>
+                  </div>
+                  <strong>{filteredRoomCells.length}/{roomCells.length}</strong>
+                </div>
+                <div className="floor-tabs" role="tablist" aria-label="Этажи и зоны корпуса">
+                  <button
+                    type="button"
+                    className={selectedFloor === 'all' ? 'selected' : ''}
+                    onClick={() => setSelectedFloor('all')}
+                  >
+                    Все
+                  </button>
+                  {floorOptions.map((floor) => (
+                    <button
+                      type="button"
+                      key={floor}
+                      className={selectedFloor === floor ? 'selected' : ''}
+                      onClick={() => setSelectedFloor(floor)}
+                    >
+                      {floorLabel(floor)}
+                    </button>
+                  ))}
+                </div>
+                <label className="room-search">
+                  <Search size={16} />
+                  <input
+                    value={roomQuery}
+                    onChange={(event) => setRoomQuery(event.target.value)}
+                    placeholder="Найти аудиторию, преподавателя, группу"
+                  />
+                </label>
+                <div className="auditorium-grid" aria-label={`Аудитории: ${selectedBuilding.name}`}>
+                  {filteredRoomCells.length === 0 ? (
+                    <div className="empty-feed">
+                      <Search size={18} />
+                      <span>Под этот фильтр аудитории не найдены.</span>
+                    </div>
+                  ) : (
+                    filteredRoomCells.map((cell) => (
+                      <article className={`auditorium-cell ${roomCellStatus(cell)}`} key={cell.key}>
+                        <div className="auditorium-cell-top">
+                          <strong>{cell.label}</strong>
+                          <span>{floorLabel(cell.floor)}</span>
+                        </div>
+                        <p>{roomCellPrimaryText(cell)}</p>
+                        <div className="auditorium-cell-meta">
+                          <span>{cell.live ? `${cell.live.count}/${cell.live.capacity}` : cell.trackedRoom ? `план ${cell.trackedRoom.capacity}` : cell.kind === 'service' ? 'сервисная зона' : 'нет live'}</span>
+                          <small>{cell.lessons.length > 0 ? `${cell.lessons.length} зан.` : 'расписания нет'}</small>
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="floor-panel-empty">
+                <Building2 size={22} />
+                <div>
+                  <strong>Выберите корпус на схеме</strong>
+                  <span>После выбора появятся этажи, аудитории, занятия и live-замеры по каждой точке.</span>
+                </div>
+              </div>
+            )}
+          </div>
           <div className="campus-building-list" aria-label="Диапазоны аудиторий по корпусам">
             {buildings.map((building) => (
-              <article key={building.id} className={building.id === selectedBuildingId ? 'selected' : ''}>
+              <button
+                type="button"
+                key={building.id}
+                className={building.id === selectedBuildingId ? 'selected' : ''}
+                onClick={() => onBuildingChange(building.id === selectedBuildingId ? null : building.id)}
+              >
                 <div>
                   <strong>{building.name}</strong>
                   <span>{building.address}</span>
                 </div>
                 <small>{building.roomRanges || 'диапазоны аудиторий уточняются'}</small>
-              </article>
+              </button>
             ))}
           </div>
         </div>
@@ -2109,6 +2261,277 @@ function dimensionLabel(value: ScheduleAnalyticsRow['dimension']): string {
     group: 'Группы',
   };
   return labels[value];
+}
+
+function parseCampusRoomSpecs(building: CampusBuilding): CampusRoomSpec[] {
+  const tokens = building.roomRanges
+    .split(',')
+    .map((token) => token.replace(/[–—]/g, '-').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const specs: CampusRoomSpec[] = [];
+  const seen = new Set<string>();
+
+  function add(label: string, floor: string, kind: CampusRoomSpec['kind'] = 'auditorium') {
+    const key = `${building.id}-${normalizeCampusSearch(label)}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    specs.push({ key, label, floor, kind });
+  }
+
+  tokens.forEach((token) => {
+    const prefixedRange = token.match(/^9\s*(\d{3})\s*-\s*(\d{3})$/);
+    if (building.code === 'K9' && prefixedRange) {
+      expandRoomRange(Number(prefixedRange[1]), Number(prefixedRange[2])).forEach((room) => {
+        add(`9 ${room}`, String(room).slice(0, 1));
+      });
+      return;
+    }
+
+    const range = token.match(/^(\d{1,3})\s*-\s*(\d{1,3})$/);
+    if (range) {
+      expandRoomRange(Number(range[1]), Number(range[2])).forEach((room) => {
+        add(String(room), String(room).slice(0, 1));
+      });
+      return;
+    }
+
+    const prefixedRoom = token.match(/^9\s*(\d{3})$/);
+    if (building.code === 'K9' && prefixedRoom) {
+      add(`9 ${prefixedRoom[1]}`, prefixedRoom[1].slice(0, 1));
+      return;
+    }
+
+    const numericRoom = token.match(/^\d{1,3}$/);
+    if (numericRoom) {
+      add(token, token.slice(0, 1));
+      return;
+    }
+
+    const lectureRoom = token.match(/^Л\s*-\s*(\d+)$/i);
+    if (lectureRoom) {
+      add(`Л-${lectureRoom[1]}`, 'Л');
+      return;
+    }
+
+    add(token, serviceFloor(token), 'service');
+  });
+
+  return specs.sort(compareCampusSpecs);
+}
+
+function buildCampusRoomCells(
+  building: CampusBuilding,
+  rooms: Room[],
+  current: CurrentAttendance[],
+  entries: ScheduleEntry[],
+): CampusRoomCell[] {
+  const buildingRooms = rooms.filter((room) => campusBuildingMatches(building, room.building));
+  const buildingCurrent = current.filter((item) => campusBuildingMatches(building, item.building));
+  const buildingEntries = entries.filter((entry) => entry.buildingId === building.id || campusBuildingMatches(building, entry.building));
+  const matchedRoomIds = new Set<number>();
+  const matchedLiveIds = new Set<number>();
+  const matchedEntryIds = new Set<number>();
+
+  const cells: CampusRoomCell[] = parseCampusRoomSpecs(building).map((spec) => {
+    const trackedRoom = buildingRooms.find((room) => campusRoomMatches(room.name, spec));
+    const live = buildingCurrent.find((item) => {
+      if (trackedRoom && item.roomId === trackedRoom.id) {
+        return true;
+      }
+      return campusRoomMatches(item.roomName, spec);
+    });
+    const lessons = buildingEntries.filter((entry) => campusRoomMatches(entry.roomName, spec));
+
+    if (trackedRoom) {
+      matchedRoomIds.add(trackedRoom.id);
+    }
+    if (live) {
+      matchedLiveIds.add(live.roomId);
+    }
+    lessons.forEach((lesson) => matchedEntryIds.add(lesson.id));
+
+    return {
+      ...spec,
+      trackedRoom,
+      live,
+      lessons,
+    };
+  });
+
+  buildingRooms
+    .filter((room) => !matchedRoomIds.has(room.id))
+    .forEach((room) => {
+      const live = buildingCurrent.find((item) => item.roomId === room.id);
+      const lessons = buildingEntries.filter((entry) => entry.roomId === room.id || normalizeCampusSearch(entry.roomName) === normalizeCampusSearch(room.name));
+      if (live) {
+        matchedLiveIds.add(live.roomId);
+      }
+      lessons.forEach((lesson) => matchedEntryIds.add(lesson.id));
+      cells.push({
+        key: `${building.id}-room-${room.id}`,
+        label: room.name,
+        floor: room.floor || 'Сервис',
+        kind: 'auditorium',
+        trackedRoom: room,
+        live,
+        lessons,
+      });
+    });
+
+  buildingCurrent
+    .filter((item) => !matchedLiveIds.has(item.roomId))
+    .forEach((item) => {
+      const lessons = buildingEntries.filter((entry) => normalizeCampusSearch(entry.roomName) === normalizeCampusSearch(item.roomName));
+      lessons.forEach((lesson) => matchedEntryIds.add(lesson.id));
+      cells.push({
+        key: `${building.id}-live-${item.roomId}`,
+        label: item.roomName,
+        floor: item.floor || 'Сервис',
+        kind: 'auditorium',
+        live: item,
+        lessons,
+      });
+    });
+
+  buildingEntries
+    .filter((entry) => !matchedEntryIds.has(entry.id))
+    .forEach((entry) => {
+      cells.push({
+        key: `${building.id}-lesson-${entry.id}`,
+        label: entry.roomName,
+        floor: entry.floor || 'Сервис',
+        kind: 'auditorium',
+        lessons: [entry],
+      });
+    });
+
+  return cells.sort(compareCampusCells);
+}
+
+function campusFloorOptions(cells: CampusRoomCell[]): string[] {
+  return [...new Set(cells.map((cell) => cell.floor))].sort(compareFloors);
+}
+
+function expandRoomRange(start: number, end: number): number[] {
+  if (end < start || end - start > 200) {
+    return [start];
+  }
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+function serviceFloor(value: string): string {
+  const floor = value.match(/(?:^|\s)([1-6])\s*этаж/i);
+  return floor ? floor[1] : 'Сервис';
+}
+
+function campusBuildingMatches(building: CampusBuilding, value: string): boolean {
+  return normalizeCampusSearch(building.name) === normalizeCampusSearch(value);
+}
+
+function campusRoomMatches(value: string, spec: CampusRoomSpec): boolean {
+  const normalizedValue = normalizeCampusSearch(value);
+  const normalizedSpec = normalizeCampusSearch(spec.label);
+  if (normalizedValue === normalizedSpec || normalizedValue.includes(normalizedSpec)) {
+    return true;
+  }
+  const valueIds = campusRoomIdentifiers(value);
+  return campusRoomIdentifiers(spec.label).some((id) => valueIds.includes(id));
+}
+
+function campusRoomIdentifiers(value: string): string[] {
+  const normalized = normalizeCampusSearch(value);
+  const identifiers = new Set<string>();
+  const lecture = normalized.match(/л\s*(\d+)/);
+  if (lecture) {
+    identifiers.add(`л-${lecture[1]}`);
+  }
+  const numbers = normalized.match(/\d+/g) ?? [];
+  numbers.forEach((number) => identifiers.add(number.replace(/^0+/, '') || '0'));
+  if (numbers.length > 1) {
+    identifiers.add(numbers[numbers.length - 1].replace(/^0+/, '') || '0');
+  }
+  return [...identifiers];
+}
+
+function normalizeCampusSearch(value: string): string {
+  return value
+    .toLocaleLowerCase('ru-RU')
+    .replace(/ё/g, 'е')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+function compareCampusSpecs(left: CampusRoomSpec, right: CampusRoomSpec): number {
+  return compareFloors(left.floor, right.floor) || campusRoomSortNumber(left.label) - campusRoomSortNumber(right.label) || left.label.localeCompare(right.label, 'ru');
+}
+
+function compareCampusCells(left: CampusRoomCell, right: CampusRoomCell): number {
+  return compareFloors(left.floor, right.floor) || campusRoomSortNumber(left.label) - campusRoomSortNumber(right.label) || left.label.localeCompare(right.label, 'ru');
+}
+
+function compareFloors(left: string, right: string): number {
+  return floorSortWeight(left) - floorSortWeight(right) || left.localeCompare(right, 'ru');
+}
+
+function floorSortWeight(floor: string): number {
+  const numeric = Number(floor);
+  if (Number.isFinite(numeric) && floor.trim() !== '') {
+    return numeric;
+  }
+  if (floor === 'Л') {
+    return 60;
+  }
+  if (floor === 'Сервис') {
+    return 90;
+  }
+  return 80;
+}
+
+function campusRoomSortNumber(value: string): number {
+  const numbers = value.match(/\d+/g) ?? [];
+  return numbers.length === 0 ? 9999 : Number(numbers[numbers.length - 1]);
+}
+
+function floorLabel(floor: string): string {
+  if (floor === 'Л') {
+    return 'Лекционные';
+  }
+  if (floor === 'Сервис') {
+    return 'Сервис';
+  }
+  return `${floor} этаж`;
+}
+
+function roomCellStatus(cell: CampusRoomCell): CurrentAttendance['status'] | 'planned' | 'service' | 'empty' {
+  if (cell.live) {
+    return cell.live.status;
+  }
+  if (cell.lessons.length > 0) {
+    return 'planned';
+  }
+  if (cell.kind === 'service') {
+    return 'service';
+  }
+  return 'empty';
+}
+
+function roomCellPrimaryText(cell: CampusRoomCell): string {
+  if (cell.live) {
+    return `${cell.live.occupancyPercent}% загрузка · ${Math.round(cell.live.confidence * 100)}% доверие`;
+  }
+  if (cell.lessons.length > 0) {
+    const lesson = cell.lessons[0];
+    return `${formatShortTime(lesson.startsAt)} ${lesson.disciplineName} · ${lesson.groupName}`;
+  }
+  if (cell.trackedRoom) {
+    return 'Аудитория заведена в системе, фактического замера пока нет';
+  }
+  if (cell.kind === 'service') {
+    return 'Точка кампуса из официальной схемы';
+  }
+  return 'Аудитория из диапазонов корпуса';
 }
 
 function entryStatus(entry: ScheduleEntry): 'normal' | 'warning' | 'full' | 'idle' {
