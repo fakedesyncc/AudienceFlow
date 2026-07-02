@@ -2969,6 +2969,10 @@ textarea {
     width: 100%;
   }
 
+  .room-state-table {
+    min-width: 0;
+  }
+
   .room-state-table thead {
     position: absolute;
     inset: 0 auto auto 0;
