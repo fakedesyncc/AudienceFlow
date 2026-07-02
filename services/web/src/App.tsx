@@ -1091,6 +1091,7 @@ function CampusScheduleView({
   const activeLessons = entries.filter((entry) => isLessonActive(entry, date));
   const measuredEntries = entries.filter((entry) => entry.actualCount !== null);
   const scheduledPeople = measuredEntries.reduce((sum, entry) => sum + (entry.actualCount ?? 0), 0);
+  const plannedCapacity = entries.reduce((sum, entry) => sum + entry.capacity, 0);
   const averageOccupancy = measuredEntries.length === 0
     ? 0
     : Math.round(measuredEntries.reduce((sum, entry) => sum + (entry.occupancyPercent ?? 0), 0) / measuredEntries.length);
@@ -1179,7 +1180,12 @@ function CampusScheduleView({
         <Metric icon={<Building2 size={20} />} label="Корпусов" value={buildings.length} accent="teal" />
         <Metric icon={<CalendarDays size={20} />} label="Занятий за день" value={entries.length} accent="amber" />
         <Metric icon={<RadioTower size={20} />} label="Идут сейчас" value={activeLessons.length} accent="blue" />
-        <Metric icon={<Users size={20} />} label="Фактически людей" value={scheduledPeople} accent="violet" />
+        <Metric
+          icon={<Users size={20} />}
+          label="Факт / план мест"
+          value={measuredEntries.length === 0 ? `—/${plannedCapacity}` : `${scheduledPeople}/${plannedCapacity}`}
+          accent="violet"
+        />
       </section>
 
       <section className="campus-layout">
@@ -1213,15 +1219,26 @@ function CampusScheduleView({
                 >
                   <span>{building.code}</span>
                   <strong>{building.name}</strong>
-                  <small>{buildingEntries.length} зан. · {people} чел.</small>
+                  <small>{buildingEntries.length} зан. · {people || '—'} факт</small>
                 </button>
               );
             })}
           </div>
           <div className="campus-map-summary">
             <span>{rooms.length} аудиторий в контуре</span>
-            <span>{averageOccupancy}% средняя загрузка по расписанию</span>
+            <span>{measuredEntries.length === 0 ? 'нет фактических замеров' : `${averageOccupancy}% средняя загрузка`}</span>
             <span>{current.length} live-точек посещаемости</span>
+          </div>
+          <div className="campus-building-list" aria-label="Диапазоны аудиторий по корпусам">
+            {buildings.map((building) => (
+              <article key={building.id} className={building.id === selectedBuildingId ? 'selected' : ''}>
+                <div>
+                  <strong>{building.name}</strong>
+                  <span>{building.address}</span>
+                </div>
+                <small>{building.roomRanges || 'диапазоны аудиторий уточняются'}</small>
+              </article>
+            ))}
           </div>
         </div>
 
@@ -1257,7 +1274,7 @@ function CampusScheduleView({
                   </div>
                   <div className="schedule-card-load">
                     <b>{entry.actualCount ?? '-'}</b>
-                    <span>{entry.occupancyPercent === null ? 'нет замера' : `${entry.occupancyPercent}%`}</span>
+                    <span>{entry.occupancyPercent === null ? `план ${entry.capacity}` : `${entry.occupancyPercent}%`}</span>
                   </div>
                 </article>
               ))
@@ -1299,8 +1316,10 @@ function CampusScheduleView({
                     <span>{row.lessons} зан. · {row.measuredLessons} с замерами</span>
                   </div>
                   <div className="analytics-values">
-                    <span>{row.averageOccupancyPercent}%</span>
-                    <small>avg {row.averageAttendance} · peak {row.peakAttendance}</small>
+                    <span>{row.measuredLessons === 0 ? '—' : `${row.averageOccupancyPercent}%`}</span>
+                    <small>
+                      {row.measuredLessons === 0 ? 'факта ещё нет' : `avg ${row.averageAttendance} · peak ${row.peakAttendance}`}
+                    </small>
                   </div>
                 </article>
               ))

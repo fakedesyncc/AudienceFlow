@@ -21,11 +21,19 @@ const runtimeConfigKey = 'audienceflow.runtime-config';
 const defaultApiUrl = normalizeApiUrl(import.meta.env.VITE_API_URL?.trim() ?? '');
 
 let demoRooms: Room[] = [
-  { id: 1, name: 'Аудитория 305', building: 'Главный корпус', floor: '3', capacity: 64 },
-  { id: 2, name: 'Лекционный зал 101', building: 'Главный корпус', floor: '1', capacity: 120 },
-  { id: 3, name: 'Лаборатория ИКН-2', building: 'Главный корпус', floor: '2', capacity: 32 },
+  { id: 1, name: 'Аудитория 305', building: 'Корпус 9', floor: '3', capacity: 64 },
+  { id: 2, name: 'Лекционный зал 101', building: 'Корпус 1', floor: '1', capacity: 120 },
+  { id: 3, name: 'Лаборатория ИКН-2', building: 'Корпус 1', floor: '2', capacity: 32 },
   { id: 4, name: 'Поточная аудитория Б-204', building: 'Корпус Б', floor: '2', capacity: 90 },
   { id: 5, name: 'Лаборатория сетей', building: 'Корпус Б', floor: '3', capacity: 26 },
+  { id: 6, name: 'Аудитория 254', building: 'Корпус 2', floor: '2', capacity: 72 },
+  { id: 7, name: 'Аудитория 117', building: 'Корпус 3', floor: '1', capacity: 48 },
+  { id: 8, name: 'Аудитория 122', building: 'Корпус 4', floor: '1', capacity: 44 },
+  { id: 9, name: 'Аудитория 146', building: 'Корпус 5', floor: '1', capacity: 36 },
+  { id: 10, name: 'Л-1', building: 'Аудиторный корпус', floor: '1', capacity: 180 },
+  { id: 11, name: 'Актовый зал', building: 'Административный корпус', floor: '1', capacity: 220 },
+  { id: 12, name: 'Спортзал', building: 'Спортивный комплекс', floor: '1', capacity: 80 },
+  { id: 13, name: 'Корпус C · учебная аудитория', building: 'Корпус C', floor: '1', capacity: 40 },
 ];
 
 let demoCameras: Camera[] = [
@@ -65,36 +73,19 @@ let demoCameras: Camera[] = [
 ];
 
 const demoBuildings: CampusBuilding[] = [
-  {
-    id: 1,
-    code: 'MAIN',
-    name: 'Главный кампус',
-    address: '398055, Россия, г. Липецк, ул. Московская, д. 30',
-    mapX: 42,
-    mapY: 54,
-    color: '#D2691E',
-    sourceUrl: 'https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html',
-  },
-  {
-    id: 2,
-    code: 'B',
-    name: 'Корпус Б',
-    address: '398600, Россия, г. Липецк, ул. Интернациональная, д. 5',
-    mapX: 78,
-    mapY: 34,
-    color: '#2F6F7A',
-    sourceUrl: 'https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html',
-  },
-  {
-    id: 3,
-    code: 'TECH',
-    name: 'Технопарк / лабораторный контур',
-    address: 'г. Липецк, кампус ЛГТУ',
-    mapX: 58,
-    mapY: 24,
-    color: '#2E7D5B',
-    sourceUrl: 'https://www.stu.lipetsk.ru/',
-  },
+  campusBuilding(1, 'K1', 'Корпус 1', '100-111, 204-239, 309-346, 408-440', 45, 34, '#D2691E'),
+  campusBuilding(2, 'K2', 'Корпус 2', '112-115, 240-263, 347-382, 441-478', 74, 35, '#2F6F7A'),
+  campusBuilding(3, 'K3', 'Корпус 3', '117-121, 264-272', 34, 48, '#2E7D5B'),
+  campusBuilding(4, 'K4', 'Корпус 4', '122-130, 273-282', 18, 28, '#8F420F'),
+  campusBuilding(5, 'K5', 'Корпус 5', '131-146, 283-299, 383-399, 479-499, 504-514', 11, 53, '#245863'),
+  campusBuilding(6, 'K9', 'Корпус 9', '9 104-110, 9 206-216, 9 303-315, 9 401, 9 406, 9 408-512', 89, 44, '#6E340C'),
+  campusBuilding(7, 'AUD', 'Аудиторный корпус', 'Л-1, Л-2, Л-3, Л-4', 59, 31, '#D2691E'),
+  campusBuilding(8, 'ADM', 'Административный корпус', 'Ректорат, профком, актовый зал, деканат', 59, 55, '#2F6F7A'),
+  campusBuilding(9, 'DORM', 'Общежитие', 'Медпункт, вход в общежитие', 22, 55, '#8A7C71'),
+  campusBuilding(10, 'SPORT', 'Спортивный комплекс', 'Спортзал - 1 этаж, бассейн - 2 этаж', 36, 65, '#2E7D5B'),
+  campusBuilding(11, 'CAFE', 'Деревяшка / ВРЕМЯКОФЕ', 'Деревяшка - 3 этаж, ВРЕМЯКОФЕ - 2 этаж', 38, 17, '#B4551A'),
+  campusBuilding(12, 'B', 'Корпус Б', 'Отдельный учебный корпус', 72, 80, '#2F6F7A', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5'),
+  campusBuilding(13, 'C', 'Корпус C', 'Отдельный учебный корпус', 66, 86, '#8F420F', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5'),
 ];
 
 const demoDirectory: ScheduleDirectory = {
@@ -425,8 +416,32 @@ function demoCount(roomId: number, capacity: number): number {
   return Math.max(0, Math.min(capacity, Math.round(capacity * wave)));
 }
 
+function campusBuilding(
+  id: number,
+  code: string,
+  name: string,
+  roomRanges: string,
+  mapX: number,
+  mapY: number,
+  color: string,
+  address = '398055, Россия, г. Липецк, ул. Московская, д. 30',
+): CampusBuilding {
+  return {
+    id,
+    code,
+    name,
+    address,
+    roomRanges,
+    mapX,
+    mapY,
+    color,
+    sourceUrl: 'https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html',
+  };
+}
+
 function demoSchedule(date: string): ScheduleEntry[] {
   const roomByName = new Map(demoRooms.map((room) => [room.name, room]));
+  const isFutureDate = date > localDateValue(new Date());
   const rows = [
     {
       id: 1,
@@ -435,9 +450,9 @@ function demoSchedule(date: string): ScheduleEntry[] {
       endsAt: '11:10:00',
       lessonType: 'практика',
       roomName: 'Аудитория 305',
-      buildingId: 1,
-      buildingCode: 'MAIN',
-      buildingName: 'Главный кампус',
+      buildingId: 6,
+      buildingCode: 'K9',
+      buildingName: 'Корпус 9',
       groupId: 1,
       groupName: 'ПИ-24-1',
       institute: 'Институт компьютерных наук',
@@ -455,8 +470,8 @@ function demoSchedule(date: string): ScheduleEntry[] {
       lessonType: 'лекция',
       roomName: 'Лекционный зал 101',
       buildingId: 1,
-      buildingCode: 'MAIN',
-      buildingName: 'Главный кампус',
+      buildingCode: 'K1',
+      buildingName: 'Корпус 1',
       groupId: 2,
       groupName: 'ПИ-23-1',
       institute: 'Институт компьютерных наук',
@@ -474,8 +489,8 @@ function demoSchedule(date: string): ScheduleEntry[] {
       lessonType: 'лекция',
       roomName: 'Лекционный зал 101',
       buildingId: 1,
-      buildingCode: 'MAIN',
-      buildingName: 'Главный кампус',
+      buildingCode: 'K1',
+      buildingName: 'Корпус 1',
       groupId: 4,
       groupName: 'БИ-23-1',
       institute: 'Институт социальных наук, экономики и права',
@@ -493,8 +508,8 @@ function demoSchedule(date: string): ScheduleEntry[] {
       lessonType: 'лабораторная',
       roomName: 'Лаборатория ИКН-2',
       buildingId: 1,
-      buildingCode: 'MAIN',
-      buildingName: 'Главный кампус',
+      buildingCode: 'K1',
+      buildingName: 'Корпус 1',
       groupId: 3,
       groupName: 'АС-24-1',
       institute: 'Институт компьютерных наук',
@@ -511,7 +526,7 @@ function demoSchedule(date: string): ScheduleEntry[] {
       endsAt: '09:30:00',
       lessonType: 'семинар',
       roomName: 'Поточная аудитория Б-204',
-      buildingId: 2,
+      buildingId: 12,
       buildingCode: 'B',
       buildingName: 'Корпус Б',
       groupId: 1,
@@ -529,7 +544,7 @@ function demoSchedule(date: string): ScheduleEntry[] {
     .filter((row) => row.weekday === weekday)
     .map((row) => {
       const room = roomByName.get(row.roomName) ?? demoRooms[0];
-      const actualCount = demoCount(room.id, room.capacity);
+      const actualCount = isFutureDate ? null : demoCount(room.id, room.capacity);
       return {
         ...row,
         date,
@@ -540,9 +555,9 @@ function demoSchedule(date: string): ScheduleEntry[] {
         floor: room.floor,
         capacity: room.capacity,
         actualCount,
-        occupancyPercent: Math.round((actualCount / room.capacity) * 100),
-        confidence: 0.84 + (row.id % 4) * 0.03,
-        measuredAt: new Date().toISOString(),
+        occupancyPercent: actualCount === null ? null : Math.round((actualCount / room.capacity) * 100),
+        confidence: actualCount === null ? null : 0.84 + (row.id % 4) * 0.03,
+        measuredAt: actualCount === null ? null : new Date().toISOString(),
       };
     });
 }
@@ -577,6 +592,13 @@ function demoScheduleAnalytics(date: string, dimension: ScheduleAnalyticsRow['di
 function jsIsoWeekday(date: Date): number {
   const day = date.getDay();
   return day === 0 ? 7 : day;
+}
+
+function localDateValue(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function average(values: number[]): number {

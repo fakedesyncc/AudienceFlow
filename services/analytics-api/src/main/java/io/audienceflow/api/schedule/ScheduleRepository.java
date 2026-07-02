@@ -25,9 +25,24 @@ public class ScheduleRepository {
     public List<CampusBuilding> buildings() {
         return jdbcTemplate.query(
                 """
-                SELECT id, code, name, address, map_x, map_y, color, source_url, updated_at
+                SELECT id, code, name, address, room_ranges, map_x, map_y, color, source_url, updated_at
                 FROM campus_buildings
-                ORDER BY code
+                ORDER BY CASE code
+                    WHEN 'K1' THEN 1
+                    WHEN 'K2' THEN 2
+                    WHEN 'K3' THEN 3
+                    WHEN 'K4' THEN 4
+                    WHEN 'K5' THEN 5
+                    WHEN 'K9' THEN 6
+                    WHEN 'AUD' THEN 7
+                    WHEN 'ADM' THEN 8
+                    WHEN 'DORM' THEN 9
+                    WHEN 'SPORT' THEN 10
+                    WHEN 'CAFE' THEN 11
+                    WHEN 'B' THEN 12
+                    WHEN 'C' THEN 13
+                    ELSE 99
+                END, name
                 """,
                 this::mapBuilding
         );
@@ -312,6 +327,7 @@ public class ScheduleRepository {
                 rs.getString("code"),
                 rs.getString("name"),
                 rs.getString("address"),
+                rs.getString("room_ranges"),
                 rs.getDouble("map_x"),
                 rs.getDouble("map_y"),
                 rs.getString("color"),
