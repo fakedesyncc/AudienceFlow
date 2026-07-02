@@ -1549,6 +1549,469 @@ select:focus {
   font-weight: 800;
 }
 
+/* ── Карта кампуса и расписание ── */
+.campus-console {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+.campus-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  background:
+    linear-gradient(135deg, rgba(210, 105, 30, 0.11), rgba(47, 111, 122, 0.08)),
+    var(--surface);
+}
+
+.campus-hero-title {
+  min-width: 0;
+}
+
+.campus-hero-title span {
+  display: block;
+  color: var(--amber-700);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+.campus-hero-title h2 {
+  margin: 6px 0 0;
+  color: var(--ink-900);
+  font-size: 24px;
+  font-weight: 850;
+  line-height: 1.15;
+}
+
+.source-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.source-actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  color: var(--ink-700);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.source-actions a:hover {
+  color: var(--amber-700);
+  border-color: var(--amber-200);
+  background: var(--amber-50);
+}
+
+.campus-filters {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) repeat(3, minmax(180px, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+.campus-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.campus-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.72fr);
+  grid-template-areas:
+    "map day"
+    "analytics import";
+  gap: 20px;
+  align-items: start;
+  min-width: 0;
+}
+
+.campus-map-panel {
+  grid-area: map;
+  min-width: 0;
+}
+
+.day-schedule-panel {
+  grid-area: day;
+  min-width: 0;
+}
+
+.schedule-analytics-panel {
+  grid-area: analytics;
+  min-width: 0;
+}
+
+.schedule-import-panel {
+  grid-area: import;
+  min-width: 0;
+}
+
+.campus-map {
+  position: relative;
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(circle at 24% 18%, rgba(210, 105, 30, 0.14), transparent 23%),
+    radial-gradient(circle at 80% 28%, rgba(47, 111, 122, 0.13), transparent 28%),
+    linear-gradient(145deg, #fffaf3 0%, #f6eee4 48%, #eef6f5 100%);
+}
+
+.map-grid {
+  position: absolute;
+  inset: 28px;
+  opacity: 0.55;
+  background-image:
+    linear-gradient(rgba(42, 33, 28, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(42, 33, 28, 0.08) 1px, transparent 1px);
+  background-size: 52px 52px;
+  transform: perspective(600px) rotateX(58deg) rotateZ(-7deg) translateY(16px);
+  transform-origin: center;
+}
+
+.map-band {
+  position: absolute;
+  height: 42px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(217, 207, 195, 0.76);
+  box-shadow: var(--shadow-sm);
+}
+
+.map-band-main {
+  left: -5%;
+  right: 14%;
+  top: 62%;
+  transform: rotate(-7deg);
+}
+
+.map-band-secondary {
+  left: 42%;
+  right: -8%;
+  top: 35%;
+  transform: rotate(21deg);
+}
+
+.campus-marker {
+  --marker-color: var(--amber-500);
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 10px;
+  width: min(240px, 34%);
+  min-width: 168px;
+  min-height: 72px;
+  padding: 12px;
+  color: var(--ink-900);
+  text-align: left;
+  border: 1px solid color-mix(in srgb, var(--marker-color), var(--surface) 45%);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--shadow-md);
+  transform: translate(-50%, -50%);
+  backdrop-filter: blur(14px);
+}
+
+.campus-marker:hover,
+.campus-marker.selected {
+  border-color: var(--marker-color);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--marker-color), transparent 74%),
+    var(--shadow-md);
+}
+
+.campus-marker span {
+  grid-row: 1 / 3;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  color: #ffffff;
+  border-radius: var(--r-sm);
+  background: var(--marker-color);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+.campus-marker strong,
+.campus-marker small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campus-marker strong {
+  color: var(--ink-900);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.campus-marker small {
+  color: var(--ink-600);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.campus-map-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.campus-map-summary span {
+  min-height: 30px;
+  padding: 7px 10px;
+  color: var(--ink-700);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--sand);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.schedule-list,
+.analytics-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.schedule-list {
+  max-height: 560px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.schedule-card {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 62px;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--ok-600);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.schedule-card.warning {
+  border-left-color: var(--amber-500);
+}
+
+.schedule-card.full {
+  border-left-color: var(--danger-600);
+}
+
+.schedule-card.idle {
+  border-left-color: var(--line-strong);
+}
+
+.schedule-card time {
+  color: var(--amber-700);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.schedule-card-body {
+  min-width: 0;
+}
+
+.schedule-card-body strong,
+.schedule-card-body span,
+.schedule-card-body small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-card-body strong {
+  color: var(--ink-900);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.schedule-card-body span,
+.schedule-card-body small {
+  margin-top: 3px;
+  color: var(--ink-600);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.schedule-card-load {
+  min-width: 0;
+  text-align: right;
+}
+
+.schedule-card-load b {
+  display: block;
+  color: var(--ink-900);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.schedule-card-load span {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-600);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.dimension-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--sand);
+}
+
+.dimension-tabs button {
+  min-height: 36px;
+  min-width: 0;
+  padding: 0 10px;
+  color: var(--ink-600);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.dimension-tabs button.selected {
+  color: var(--amber-700);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.analytics-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(86px, auto);
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.analytics-row strong,
+.analytics-row span,
+.analytics-row small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-row strong {
+  color: var(--ink-900);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.analytics-row span,
+.analytics-row small {
+  margin-top: 3px;
+  color: var(--ink-600);
+  font-size: 12px;
+}
+
+.analytics-values {
+  text-align: right;
+}
+
+.analytics-values span {
+  color: var(--cool-600);
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.file-drop {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 116px;
+  padding: 16px;
+  color: var(--amber-700);
+  border: 1px dashed var(--amber-200);
+  border-radius: var(--r-md);
+  background: var(--amber-50);
+  text-align: center;
+  cursor: pointer;
+}
+
+.file-drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.file-drop span {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.import-result {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--sand);
+}
+
+.import-result strong {
+  color: var(--ink-900);
+  font-size: 14px;
+}
+
+.import-result span,
+.import-result small {
+  color: var(--ink-600);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 /* ── Пустые / ошибочные состояния ── */
 .empty-feed {
   display: flex;
@@ -1607,6 +2070,15 @@ select:focus {
     grid-template-columns: 1fr;
   }
 
+  .campus-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "map"
+      "day"
+      "analytics"
+      "import";
+  }
+
   .ops-board {
     grid-row: auto;
   }
@@ -1631,7 +2103,8 @@ select:focus {
 
   .metrics-row,
   .room-grid,
-  .ops-kpis {
+  .ops-kpis,
+  .campus-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1639,6 +2112,10 @@ select:focus {
   .ops-workspace,
   .mobile-grid {
     grid-template-columns: 1fr;
+  }
+
+  .campus-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .ops-board {
@@ -1725,6 +2202,24 @@ select:focus {
 
   .workspace {
     padding: 20px;
+  }
+
+  .campus-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .source-actions {
+    justify-content: flex-start;
+  }
+
+  .campus-map {
+    min-height: 360px;
+  }
+
+  .campus-marker {
+    width: min(220px, 42%);
+    min-width: 146px;
   }
 }
 
@@ -1933,7 +2428,12 @@ select:focus {
 
   .metrics-row,
   .room-grid,
-  .ops-kpis {
+  .ops-kpis,
+  .campus-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .campus-filters {
     grid-template-columns: 1fr;
   }
 
@@ -2001,5 +2501,65 @@ select:focus {
   .login-showcase,
   .login-form-pane {
     padding: 24px;
+  }
+
+  .campus-hero-title h2 {
+    font-size: 21px;
+  }
+
+  .source-actions a {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .campus-map {
+    min-height: 420px;
+  }
+
+  .map-grid,
+  .map-band {
+    display: none;
+  }
+
+  .campus-marker {
+    position: static;
+    width: 100%;
+    min-width: 0;
+    transform: none;
+  }
+
+  .campus-map {
+    display: grid;
+    align-content: start;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .schedule-card {
+    grid-template-columns: 1fr auto;
+    align-items: start;
+  }
+
+  .schedule-card time {
+    grid-column: 1 / -1;
+  }
+
+  .schedule-card-body strong,
+  .schedule-card-body span,
+  .schedule-card-body small {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .dimension-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-row {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-values {
+    text-align: left;
   }
 }

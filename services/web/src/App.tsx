@@ -1,6 +1,8 @@
 import {
   Activity,
+  BookOpen,
   Building2,
+  CalendarDays,
   Camera,
   Clock3,
   DoorOpen,
@@ -15,13 +17,14 @@ import {
   Server,
   ShieldCheck,
   Smartphone,
+  Upload,
   UserRound,
   Users,
   Wifi,
   WifiOff,
   Wrench,
 } from 'lucide-react';
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, CSSProperties, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Area,
   AreaChart,
@@ -36,11 +39,16 @@ import {
   createCamera,
   createRoom,
   createUser,
+  fetchCampusBuildings,
   fetchCameras,
   fetchCurrent,
   fetchRooms,
+  fetchSchedule,
+  fetchScheduleAnalytics,
+  fetchScheduleDirectory,
   fetchTimeline,
   fetchUsers,
+  importScheduleExcel,
   loadRuntimeConfig,
   liveSocketUrl,
   login,
@@ -52,6 +60,7 @@ import { normalizePreviewUrl, restoreSession, sessionStorageKey } from './sessio
 import type {
   AuthSession,
   Camera as CameraType,
+  CampusBuilding,
   CreateCameraPayload,
   CreateRoomPayload,
   CreateUserPayload,
@@ -59,11 +68,15 @@ import type {
   Role,
   Room,
   RuntimeConfig,
+  ScheduleAnalyticsRow,
+  ScheduleDirectory,
+  ScheduleEntry,
+  ScheduleImportResult,
   TimelinePoint,
   UserView,
 } from './types';
 
-type View = 'monitoring' | 'overview' | 'rooms' | 'cameras' | 'mobile' | 'users';
+type View = 'monitoring' | 'overview' | 'campus' | 'rooms' | 'cameras' | 'mobile' | 'users';
 type LiveState = 'presentation' | 'polling' | 'live' | 'offline';
 
 interface TelemetryEvent {
@@ -112,6 +125,10 @@ export function App() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [cameras, setCameras] = useState<CameraType[]>([]);
   const [users, setUsers] = useState<UserView[]>([]);
+  const [buildings, setBuildings] = useState<CampusBuilding[]>([]);
+  const [scheduleDirectory, setScheduleDirectory] = useState<ScheduleDirectory>({ groups: [], teachers: [], disciplines: [] });
+  const [scheduleEntries, setScheduleEntries] = useState<ScheduleEntry[]>([]);
+  const [scheduleAnalytics, setScheduleAnalytics] = useState<ScheduleAnalyticsRow[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryEvent[]>([]);
   const [liveState, setLiveState] = useState<LiveState>('offline');
   const [lastSnapshotAt, setLastSnapshotAt] = useState<Date | null>(null);
@@ -119,6 +136,12 @@ export function App() {
   const [selectedMonitoringRoomId, setSelectedMonitoringRoomId] = useState<number | null>(null);
   const [monitorBuilding, setMonitorBuilding] = useState('all');
   const [monitorStatus, setMonitorStatus] = useState<'all' | CurrentAttendance['status']>('all');
+  const [scheduleDate, setScheduleDate] = useState(() => todayInputValue());
+  const [scheduleBuildingId, setScheduleBuildingId] = useState<number | null>(null);
+  const [scheduleTeacherId, setScheduleTeacherId] = useState<number | null>(null);
+  const [scheduleGroupId, setScheduleGroupId] = useState<number | null>(null);
+  const [scheduleDimension, setScheduleDimension] = useState<ScheduleAnalyticsRow['dimension']>('teacher');
+  const [scheduleImportResult, setScheduleImportResult] = useState<ScheduleImportResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const liveSocketRef = useRef<WebSocket | null>(null);
@@ -148,6 +171,12 @@ export function App() {
       if (session.user.role === 'ADMIN') {
         setUsers(await fetchUsers(session));
       }
+      const [buildingData, directoryData] = await Promise.all([
+        fetchCampusBuildings(session),
+        fetchScheduleDirectory(session),
+      ]);
+      setBuildings(buildingData);
+      setScheduleDirectory(directoryData);
       if (selectedRoomId === null && roomData.length > 0) {
         setSelectedRoomId(roomData[0].id);
       }
@@ -175,6 +204,36 @@ export function App() {
       .then(setTimeline)
       .catch((err) => setError(err instanceof Error ? err.message : 'Не удалось загрузить график'));
   }, [selectedRoomId, session]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    let cancelled = false;
+    Promise.all([
+      fetchSchedule(session, {
+        date: scheduleDate,
+        buildingId: scheduleBuildingId,
+        teacherId: scheduleTeacherId,
+        groupId: scheduleGroupId,
+      }),
+      fetchScheduleAnalytics(session, scheduleDate, scheduleDimension),
+    ])
+      .then(([entries, analytics]) => {
+        if (!cancelled) {
+          setScheduleEntries(entries);
+          setScheduleAnalytics(analytics);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Не удалось загрузить расписание');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scheduleBuildingId, scheduleDate, scheduleDimension, scheduleGroupId, scheduleTeacherId, session]);
 
   useEffect(() => {
     if (!session) {
@@ -269,6 +328,7 @@ export function App() {
   const navigation = [
     { id: 'monitoring' as View, label: 'Оперативно', icon: RadioTower, enabled: true },
     { id: 'overview' as View, label: 'Аналитика', icon: Activity, enabled: true },
+    { id: 'campus' as View, label: 'Карта', icon: MapPin, enabled: true },
     { id: 'rooms' as View, label: 'Аудитории', icon: DoorOpen, enabled: true },
     { id: 'cameras' as View, label: 'Камеры', icon: Camera, enabled: true },
     { id: 'mobile' as View, label: 'Mobile', icon: Smartphone, enabled: true },
@@ -322,6 +382,28 @@ export function App() {
     }
     const user = await createUser(session, payload);
     setUsers((items) => [...items, user]);
+  }
+
+  async function handleScheduleImport(file: File) {
+    if (!session) {
+      return;
+    }
+    setScheduleImportResult(null);
+    const result = await importScheduleExcel(session, file);
+    setScheduleImportResult(result);
+    const [entries, analytics, directoryData] = await Promise.all([
+      fetchSchedule(session, {
+        date: scheduleDate,
+        buildingId: scheduleBuildingId,
+        teacherId: scheduleTeacherId,
+        groupId: scheduleGroupId,
+      }),
+      fetchScheduleAnalytics(session, scheduleDate, scheduleDimension),
+      fetchScheduleDirectory(session),
+    ]);
+    setScheduleEntries(entries);
+    setScheduleAnalytics(analytics);
+    setScheduleDirectory(directoryData);
   }
 
   return (
@@ -426,6 +508,29 @@ export function App() {
               onBuildingChange={setMonitorBuilding}
               onStatusChange={setMonitorStatus}
               onRefresh={loadData}
+            />
+          )}
+          {activeView === 'campus' && (
+            <CampusScheduleView
+              buildings={buildings}
+              rooms={rooms}
+              current={current}
+              directory={scheduleDirectory}
+              entries={scheduleEntries}
+              analytics={scheduleAnalytics}
+              date={scheduleDate}
+              selectedBuildingId={scheduleBuildingId}
+              selectedTeacherId={scheduleTeacherId}
+              selectedGroupId={scheduleGroupId}
+              dimension={scheduleDimension}
+              canImport={Boolean(canManageInfrastructure)}
+              importResult={scheduleImportResult}
+              onDateChange={setScheduleDate}
+              onBuildingChange={setScheduleBuildingId}
+              onTeacherChange={setScheduleTeacherId}
+              onGroupChange={setScheduleGroupId}
+              onDimensionChange={setScheduleDimension}
+              onImport={handleScheduleImport}
             />
           )}
           {activeView === 'rooms' && (
@@ -935,6 +1040,298 @@ function Overview({
         {current.map((item) => (
           <OccupancyCard key={item.roomId} item={item} />
         ))}
+      </section>
+    </div>
+  );
+}
+
+function CampusScheduleView({
+  buildings,
+  rooms,
+  current,
+  directory,
+  entries,
+  analytics,
+  date,
+  selectedBuildingId,
+  selectedTeacherId,
+  selectedGroupId,
+  dimension,
+  canImport,
+  importResult,
+  onDateChange,
+  onBuildingChange,
+  onTeacherChange,
+  onGroupChange,
+  onDimensionChange,
+  onImport,
+}: {
+  buildings: CampusBuilding[];
+  rooms: Room[];
+  current: CurrentAttendance[];
+  directory: ScheduleDirectory;
+  entries: ScheduleEntry[];
+  analytics: ScheduleAnalyticsRow[];
+  date: string;
+  selectedBuildingId: number | null;
+  selectedTeacherId: number | null;
+  selectedGroupId: number | null;
+  dimension: ScheduleAnalyticsRow['dimension'];
+  canImport: boolean;
+  importResult: ScheduleImportResult | null;
+  onDateChange: (date: string) => void;
+  onBuildingChange: (buildingId: number | null) => void;
+  onTeacherChange: (teacherId: number | null) => void;
+  onGroupChange: (groupId: number | null) => void;
+  onDimensionChange: (dimension: ScheduleAnalyticsRow['dimension']) => void;
+  onImport: (file: File) => Promise<void>;
+}) {
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const activeLessons = entries.filter((entry) => isLessonActive(entry, date));
+  const measuredEntries = entries.filter((entry) => entry.actualCount !== null);
+  const scheduledPeople = measuredEntries.reduce((sum, entry) => sum + (entry.actualCount ?? 0), 0);
+  const averageOccupancy = measuredEntries.length === 0
+    ? 0
+    : Math.round(measuredEntries.reduce((sum, entry) => sum + (entry.occupancyPercent ?? 0), 0) / measuredEntries.length);
+  const selectedBuilding = selectedBuildingId
+    ? buildings.find((building) => building.id === selectedBuildingId) ?? null
+    : null;
+
+  async function importFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file) {
+      return;
+    }
+    setImporting(true);
+    setImportError(null);
+    try {
+      await onImport(file);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Не удалось импортировать расписание');
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  return (
+    <div className="campus-console">
+      <section className="campus-hero panel">
+        <div className="campus-hero-title">
+          <span>ЛГТУ · карта, расписание и посещаемость</span>
+          <h2>Учебный день на кампусе</h2>
+        </div>
+        <div className="source-actions">
+          <a href="https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html" target="_blank" rel="noreferrer">
+            Карта корпусов
+          </a>
+          <a href="https://www.stu.lipetsk.ru/struct/management/rectorat/pro-edu/sub/umu/schedule/" target="_blank" rel="noreferrer">
+            Расписание ЛГТУ
+          </a>
+          <a href="https://www.stu.lipetsk.ru/struct/management/rector/sub/hr/pps/table.html?op=all" target="_blank" rel="noreferrer">
+            ППС
+          </a>
+        </div>
+      </section>
+
+      <section className="campus-filters panel">
+        <label>
+          <span>Дата</span>
+          <input value={date} onChange={(event) => onDateChange(event.target.value)} type="date" />
+        </label>
+        <label>
+          <span>Корпус</span>
+          <select value={selectedBuildingId ?? ''} onChange={(event) => onBuildingChange(event.target.value ? Number(event.target.value) : null)}>
+            <option value="">Все корпуса</option>
+            {buildings.map((building) => (
+              <option key={building.id} value={building.id}>
+                {building.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Преподаватель</span>
+          <select value={selectedTeacherId ?? ''} onChange={(event) => onTeacherChange(event.target.value ? Number(event.target.value) : null)}>
+            <option value="">Все преподаватели</option>
+            {directory.teachers.map((teacher) => (
+              <option key={teacher.id} value={teacher.id}>
+                {teacher.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Группа</span>
+          <select value={selectedGroupId ?? ''} onChange={(event) => onGroupChange(event.target.value ? Number(event.target.value) : null)}>
+            <option value="">Все группы</option>
+            {directory.groups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
+
+      <section className="campus-kpis">
+        <Metric icon={<Building2 size={20} />} label="Корпусов" value={buildings.length} accent="teal" />
+        <Metric icon={<CalendarDays size={20} />} label="Занятий за день" value={entries.length} accent="amber" />
+        <Metric icon={<RadioTower size={20} />} label="Идут сейчас" value={activeLessons.length} accent="blue" />
+        <Metric icon={<Users size={20} />} label="Фактически людей" value={scheduledPeople} accent="violet" />
+      </section>
+
+      <section className="campus-layout">
+        <div className="panel campus-map-panel">
+          <div className="panel-header">
+            <div>
+              <h2>{selectedBuilding ? selectedBuilding.name : 'Интерактивная карта кампуса'}</h2>
+              <span>{selectedBuilding ? selectedBuilding.address : 'Выберите корпус, чтобы сфокусировать расписание'}</span>
+            </div>
+            <MapPin size={20} />
+          </div>
+          <div className="campus-map" role="img" aria-label="Интерактивная схема корпусов ЛГТУ">
+            <div className="map-band map-band-main" />
+            <div className="map-band map-band-secondary" />
+            <div className="map-grid" />
+            {buildings.map((building) => {
+              const buildingEntries = entries.filter((entry) => entry.buildingId === building.id);
+              const people = buildingEntries.reduce((sum, entry) => sum + (entry.actualCount ?? 0), 0);
+              return (
+                <button
+                  type="button"
+                  key={building.id}
+                  className={building.id === selectedBuildingId ? 'campus-marker selected' : 'campus-marker'}
+                  style={{
+                    left: `${building.mapX}%`,
+                    top: `${building.mapY}%`,
+                    '--marker-color': building.color,
+                  } as CSSProperties}
+                  onClick={() => onBuildingChange(building.id === selectedBuildingId ? null : building.id)}
+                  title={building.name}
+                >
+                  <span>{building.code}</span>
+                  <strong>{building.name}</strong>
+                  <small>{buildingEntries.length} зан. · {people} чел.</small>
+                </button>
+              );
+            })}
+          </div>
+          <div className="campus-map-summary">
+            <span>{rooms.length} аудиторий в контуре</span>
+            <span>{averageOccupancy}% средняя загрузка по расписанию</span>
+            <span>{current.length} live-точек посещаемости</span>
+          </div>
+        </div>
+
+        <aside className="panel day-schedule-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Занятия на дату</h2>
+              <span>{formatDateHuman(date)} · {weekdayLabel(new Date(`${date}T00:00:00`))}</span>
+            </div>
+            <BookOpen size={20} />
+          </div>
+          <div className="schedule-list">
+            {entries.length === 0 ? (
+              <div className="empty-feed">
+                <CalendarDays size={18} />
+                <span>На выбранную дату и фильтры занятий нет.</span>
+                <button type="button" className="empty-hint" onClick={() => {
+                  onBuildingChange(null);
+                  onTeacherChange(null);
+                  onGroupChange(null);
+                }}>
+                  Сбросить фильтры
+                </button>
+              </div>
+            ) : (
+              entries.map((entry) => (
+                <article className={`schedule-card ${entryStatus(entry)}`} key={entry.id}>
+                  <time>{formatShortTime(entry.startsAt)}–{formatShortTime(entry.endsAt)}</time>
+                  <div className="schedule-card-body">
+                    <strong>{entry.disciplineName}</strong>
+                    <span>{entry.teacherName}</span>
+                    <small>{entry.groupName} · {entry.roomName}, {entry.building}</small>
+                  </div>
+                  <div className="schedule-card-load">
+                    <b>{entry.actualCount ?? '-'}</b>
+                    <span>{entry.occupancyPercent === null ? 'нет замера' : `${entry.occupancyPercent}%`}</span>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </aside>
+
+        <section className="panel schedule-analytics-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Аналитика расписания</h2>
+              <span>Сверка плана занятий с фактической посещаемостью</span>
+            </div>
+            <Activity size={20} />
+          </div>
+          <div className="dimension-tabs" role="group" aria-label="Срез аналитики">
+            {(['teacher', 'discipline', 'group'] as const).map((item) => (
+              <button
+                type="button"
+                key={item}
+                className={dimension === item ? 'selected' : ''}
+                onClick={() => onDimensionChange(item)}
+              >
+                {dimensionLabel(item)}
+              </button>
+            ))}
+          </div>
+          <div className="analytics-list">
+            {analytics.length === 0 ? (
+              <div className="empty-feed">
+                <Activity size={18} />
+                <span>Агрегаты появятся после импорта расписания и первых замеров.</span>
+              </div>
+            ) : (
+              analytics.map((row) => (
+                <article className="analytics-row" key={`${row.dimension}-${row.id}`}>
+                  <div>
+                    <strong>{row.name}</strong>
+                    <span>{row.lessons} зан. · {row.measuredLessons} с замерами</span>
+                  </div>
+                  <div className="analytics-values">
+                    <span>{row.averageOccupancyPercent}%</span>
+                    <small>avg {row.averageAttendance} · peak {row.peakAttendance}</small>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </section>
+
+        {canImport && (
+          <section className="panel schedule-import-panel">
+            <div className="panel-header">
+              <div>
+                <h2>Импорт расписания</h2>
+                <span>Excel-файл диспетчерской: группы, преподаватели, аудитории, время</span>
+              </div>
+              <Upload size={20} />
+            </div>
+            <label className="file-drop">
+              <input type="file" accept=".xlsx,.xls" onChange={(event) => void importFile(event)} disabled={importing} />
+              <Upload size={22} />
+              <span>{importing ? 'Импорт...' : 'Загрузить Excel'}</span>
+            </label>
+            {importResult && (
+              <div className="import-result">
+                <strong>{importResult.importedRows} новых занятий</strong>
+                <span>{importResult.parsedRows} строк разобрано, {importResult.skippedRows} пропущено</span>
+                {importResult.warnings.length > 0 && <small>{importResult.warnings[0]}</small>}
+              </div>
+            )}
+            {importError && <div className="form-error">{importError}</div>}
+          </section>
+        )}
       </section>
     </div>
   );
@@ -1641,6 +2038,8 @@ function viewTitle(view: View): string {
   switch (view) {
     case 'monitoring':
       return 'Центр мониторинга';
+    case 'campus':
+      return 'Карта и расписание';
     case 'rooms':
       return 'Аудиторный фонд';
     case 'cameras':
@@ -1654,12 +2053,70 @@ function viewTitle(view: View): string {
   }
 }
 
+function todayInputValue(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateHuman(value: string): string {
+  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(
+    new Date(`${value}T00:00:00`),
+  );
+}
+
+function weekdayLabel(date: Date): string {
+  return new Intl.DateTimeFormat('ru-RU', { weekday: 'long' }).format(date);
+}
+
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 }
 
+function formatShortTime(value: string): string {
+  return value.slice(0, 5);
+}
+
 function formatClock(value: Date): string {
   return new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(value);
+}
+
+function dimensionLabel(value: ScheduleAnalyticsRow['dimension']): string {
+  const labels: Record<ScheduleAnalyticsRow['dimension'], string> = {
+    teacher: 'Преподаватели',
+    discipline: 'Дисциплины',
+    group: 'Группы',
+  };
+  return labels[value];
+}
+
+function entryStatus(entry: ScheduleEntry): 'normal' | 'warning' | 'full' | 'idle' {
+  if (entry.occupancyPercent === null) {
+    return 'idle';
+  }
+  if (entry.occupancyPercent >= 95) {
+    return 'full';
+  }
+  if (entry.occupancyPercent >= 80) {
+    return 'warning';
+  }
+  return 'normal';
+}
+
+function isLessonActive(entry: ScheduleEntry, date: string): boolean {
+  if (date !== todayInputValue()) {
+    return false;
+  }
+  const now = new Date();
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  return minutes >= timeMinutes(entry.startsAt) && minutes <= timeMinutes(entry.endsAt);
+}
+
+function timeMinutes(value: string): number {
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
 }
 
 function generatePassword(): string {
