@@ -97,6 +97,7 @@ export interface CampusBuilding {
   code: string;
   name: string;
   address: string;
+  roomRanges: string;
   mapX: number;
   mapY: number;
   color: string;

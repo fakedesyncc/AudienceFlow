@@ -7,6 +7,7 @@ public record CampusBuilding(
         String code,
         String name,
         String address,
+        String roomRanges,
         double mapX,
         double mapY,
         String color,
