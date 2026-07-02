@@ -3088,6 +3088,121 @@ textarea {
     white-space: normal;
   }
 
+  .journal-table-wrap {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .journal-table,
+  .journal-table thead,
+  .journal-table tbody,
+  .journal-table tr,
+  .journal-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .journal-table {
+    min-width: 0;
+  }
+
+  .journal-table thead {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .journal-table tbody {
+    display: grid;
+    gap: 10px;
+  }
+
+  .journal-table tr {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .journal-table th:nth-child(1),
+  .journal-table td:nth-child(1),
+  .journal-table th:nth-child(2),
+  .journal-table td:nth-child(2),
+  .journal-table th:nth-child(3),
+  .journal-table td:nth-child(3),
+  .journal-table th:nth-child(4),
+  .journal-table td:nth-child(4),
+  .journal-table th:nth-child(5),
+  .journal-table td:nth-child(5) {
+    width: auto;
+  }
+
+  .journal-table td {
+    display: grid;
+    grid-template-columns: minmax(92px, 0.42fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    height: auto;
+    padding: 0;
+    overflow: visible;
+  }
+
+  .journal-table td::before {
+    color: var(--ink-500);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .journal-table td:nth-child(1)::before {
+    content: "Студент";
+  }
+
+  .journal-table td:nth-child(2)::before {
+    content: "Зачётка";
+  }
+
+  .journal-table td:nth-child(3)::before {
+    content: "Посещение";
+  }
+
+  .journal-table td:nth-child(4)::before {
+    content: "Баллы";
+  }
+
+  .journal-table td:nth-child(5)::before {
+    content: "Комментарий";
+  }
+
+  .journal-table td strong,
+  .journal-table td .muted-text,
+  .journal-check,
+  .points-input,
+  .journal-table td > input:not(.points-input) {
+    justify-self: end;
+    max-width: 100%;
+  }
+
+  .journal-table td strong,
+  .journal-table td .muted-text {
+    white-space: normal;
+    text-align: right;
+  }
+
+  .journal-table td > input:not(.points-input) {
+    width: min(100%, 260px);
+  }
+
   .floor-panel-header {
     flex-direction: column;
   }
