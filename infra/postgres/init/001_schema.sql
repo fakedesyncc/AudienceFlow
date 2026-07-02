@@ -165,7 +165,7 @@ VALUES
     ('SPORT', 'Спортивный комплекс', '398055, Россия, г. Липецк, ул. Московская, д. 30', 'Спортзал - 1 этаж, бассейн - 2 этаж', 36, 65, '#2E7D5B', 'https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html'),
     ('CAFE', 'Деревяшка / ВРЕМЯКОФЕ', '398055, Россия, г. Липецк, ул. Московская, д. 30', 'Деревяшка - 3 этаж, ВРЕМЯКОФЕ - 2 этаж', 38, 17, '#B4551A', 'https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html'),
     ('B', 'Корпус Б', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5', 'Корпус Б, отдельный учебный корпус', 72, 80, '#2F6F7A', 'https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html'),
-    ('C', 'Корпус C', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5', 'Корпус C, отдельный учебный корпус', 66, 86, '#8F420F', 'https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html')
+    ('С', 'Корпус С', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5', 'Корпус С, отдельный учебный корпус', 66, 86, '#8F420F', 'https://www.stu.lipetsk.ru/fak/zf/ext/korpus.html')
 ON CONFLICT (code) DO UPDATE
 SET name = EXCLUDED.name,
     address = EXCLUDED.address,
@@ -189,7 +189,7 @@ VALUES
     ('Актовый зал', 'Административный корпус', '1', 220),
     ('Спортзал', 'Спортивный комплекс', '1', 80),
     ('Поточная аудитория Б-204', 'Корпус Б', '2', 90),
-    ('Корпус C · учебная аудитория', 'Корпус C', '1', 40)
+    ('Корпус С · учебная аудитория', 'Корпус С', '1', 40)
 ON CONFLICT (name) DO UPDATE
 SET building = EXCLUDED.building,
     floor = EXCLUDED.floor,
@@ -212,7 +212,7 @@ WHERE (
     OR (rooms.building = 'Спортивный комплекс' AND cb.code = 'SPORT')
     OR (rooms.building = 'Деревяшка / ВРЕМЯКОФЕ' AND cb.code = 'CAFE')
     OR (rooms.building = 'Корпус Б' AND cb.code = 'B')
-    OR (rooms.building = 'Корпус C' AND cb.code = 'C')
+    OR (rooms.building = 'Корпус С' AND cb.code = 'С')
     OR (rooms.building IN ('Главный корпус', 'Главный кампус') AND cb.code = 'K1')
     OR (rooms.building = 'Технопарк' AND cb.code = 'K1')
 );

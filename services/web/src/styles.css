@@ -40,6 +40,9 @@
   --shadow-lg: 0 24px 60px rgba(42, 33, 28, 0.16);
   --ring: 0 0 0 3px rgba(210, 105, 30, 0.3);
   --brand-gradient: linear-gradient(135deg, #2a211c 0%, #6e340c 55%, #d2691e 100%);
+  --control-h: 44px;
+  --content-x: clamp(18px, 2vw, 36px);
+  --content-y: clamp(18px, 1.7vw, 30px);
 
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--ink-900);
@@ -64,7 +67,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -287,9 +291,9 @@ a {
 
 .workspace {
   min-width: 0;
-  width: min(1720px, 100%);
-  margin-inline: auto;
-  padding: clamp(18px, 1.7vw, 28px) clamp(18px, 2vw, 34px) 44px;
+  width: 100%;
+  margin: 0;
+  padding: var(--content-y) var(--content-x) 44px;
 }
 
 /* ── Topbar ── */
@@ -299,14 +303,15 @@ a {
   justify-content: space-between;
   gap: 16px;
   min-height: 92px;
-  padding: 20px clamp(18px, 2vw, 34px);
+  padding: 20px var(--content-x);
   background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
 .topbar-title {
   min-width: 0;
-  max-width: min(820px, 58vw);
+  max-width: min(980px, 64vw);
+  flex: 1 1 auto;
 }
 
 .topbar-title > span {
@@ -341,13 +346,13 @@ a {
   justify-content: flex-end;
   gap: 10px;
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
 }
 
 /* ── Кнопки ── */
 .icon-button {
-  min-width: 42px;
-  height: 42px;
+  min-width: var(--control-h);
+  height: var(--control-h);
   padding: 0 12px;
   color: var(--ink-700);
   background: var(--surface);
@@ -376,12 +381,15 @@ a {
 }
 
 .primary-button {
-  width: 100%;
+  width: auto;
+  min-width: var(--control-h);
+  min-height: var(--control-h);
   padding: 0 18px;
   color: #ffffff;
   background: var(--amber-600);
   border: 1px solid var(--amber-600);
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .primary-button span {
@@ -396,6 +404,14 @@ a {
 .primary-button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.login-form .primary-button,
+.presentation-entry .primary-button,
+.stacked-form .primary-button,
+.journal-import-panel .primary-button,
+.mobile-actions .primary-button {
+  width: 100%;
 }
 
 /* ── Бейджи ── */
@@ -513,6 +529,7 @@ a {
   align-items: center;
   gap: 14px;
   min-height: 84px;
+  min-width: 0;
   padding: 18px;
 }
 
@@ -559,14 +576,19 @@ a {
   letter-spacing: 0.04em;
 }
 
+.metric > div {
+  min-width: 0;
+}
+
 .metric strong {
   display: block;
   margin-top: 4px;
   color: var(--ink-900);
-  font-size: 30px;
+  font-size: clamp(24px, 1.6vw, 30px);
   font-weight: 800;
   letter-spacing: -0.01em;
   line-height: 1.05;
+  overflow-wrap: anywhere;
 }
 
 .panel {
@@ -748,9 +770,11 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
-  min-height: 40px;
+  min-width: 0;
+  min-height: var(--control-h);
   padding: 0 12px;
   color: var(--ink-900);
   border: 1px solid var(--line);
@@ -766,10 +790,16 @@ input::placeholder {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   outline: none;
   border-color: var(--amber-500);
   box-shadow: var(--ring);
+}
+
+textarea {
+  padding-block: 12px;
+  line-height: 1.45;
 }
 
 .toggle-row {
@@ -1249,8 +1279,9 @@ select:focus {
 
 .ops-filters {
   display: grid;
-  grid-template-columns: minmax(160px, 210px) minmax(160px, 210px);
+  grid-template-columns: repeat(2, minmax(180px, 220px));
   gap: 12px;
+  align-items: end;
 }
 
 .ops-filters label {
@@ -1274,7 +1305,7 @@ select:focus {
 
 .room-state-table {
   width: 100%;
-  min-width: 0;
+  min-width: 900px;
   table-layout: fixed;
   border-collapse: collapse;
 }
@@ -1621,14 +1652,14 @@ select:focus {
 
 .campus-filters {
   display: grid;
-  grid-template-columns: minmax(150px, 0.7fr) repeat(3, minmax(180px, 1fr));
+  grid-template-columns: minmax(170px, 0.7fr) repeat(3, minmax(220px, 1fr));
   gap: 14px;
   align-items: end;
 }
 
 .campus-kpis {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 16px;
 }
 
@@ -1665,7 +1696,7 @@ select:focus {
 
 .campus-map {
   position: relative;
-  min-height: 500px;
+  min-height: clamp(500px, 34vw, 620px);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
@@ -2179,7 +2210,7 @@ select:focus {
 
 .schedule-card {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) 62px;
+  grid-template-columns: 92px minmax(0, 1fr) 74px;
   gap: 12px;
   align-items: center;
   min-width: 0;
@@ -2254,6 +2285,7 @@ select:focus {
   color: var(--ink-600);
   font-size: 11px;
   font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .dimension-tabs {
@@ -2387,8 +2419,7 @@ select:focus {
   min-width: 0;
 }
 
-.journal-hero,
-.journal-access {
+.journal-hero {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2412,27 +2443,84 @@ select:focus {
 }
 
 .journal-access {
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.42fr);
+  gap: 18px;
+  align-items: stretch;
+  min-width: 0;
 }
 
-.journal-access-form,
-.journal-controls {
+.journal-access-main,
+.journal-key-card {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.journal-key-card {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--sand);
+}
+
+.journal-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.journal-section-head.compact {
+  align-items: center;
+}
+
+.journal-section-head > div {
+  min-width: 0;
+}
+
+.journal-section-head strong,
+.journal-section-head span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.journal-section-head strong {
+  color: var(--ink-900);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.journal-section-head span {
+  margin-top: 4px;
+  color: var(--ink-600);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.journal-access-form {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr) minmax(150px, auto);
   gap: 12px;
   align-items: end;
   min-width: 0;
 }
 
-.journal-access-form {
-  flex: 1 1 auto;
+.journal-access-form .primary-button {
+  width: 100%;
 }
 
 .journal-access-state {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  min-height: 38px;
+  min-height: 34px;
+  max-width: 280px;
   padding: 0 12px;
   color: var(--ink-600);
   border: 1px solid var(--line);
@@ -2441,12 +2529,41 @@ select:focus {
   font-size: 12px;
   font-weight: 850;
   white-space: nowrap;
+  overflow: hidden;
+}
+
+.journal-access-state span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .journal-access-state.verified {
   color: var(--ok-700);
   border-color: rgba(46, 125, 91, 0.18);
   background: var(--ok-bg);
+}
+
+.issued-key-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--control-h);
+  gap: 8px;
+  min-width: 0;
+}
+
+.issued-key-box input {
+  color: var(--cool-600);
+  background: var(--surface);
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.journal-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(280px, 1fr) minmax(240px, 0.85fr);
+  gap: 12px;
+  align-items: end;
+  min-width: 0;
 }
 
 .journal-context {
@@ -2487,7 +2604,7 @@ select:focus {
 
 .journal-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.34fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.55fr);
   gap: 18px;
   align-items: start;
   min-width: 0;
@@ -2505,13 +2622,40 @@ select:focus {
 }
 
 .journal-table {
-  min-width: 760px;
+  min-width: 900px;
+  table-layout: fixed;
+}
+
+.journal-table th:nth-child(1),
+.journal-table td:nth-child(1) {
+  width: 28%;
+}
+
+.journal-table th:nth-child(2),
+.journal-table td:nth-child(2) {
+  width: 14%;
+}
+
+.journal-table th:nth-child(3),
+.journal-table td:nth-child(3) {
+  width: 15%;
+}
+
+.journal-table th:nth-child(4),
+.journal-table td:nth-child(4) {
+  width: 12%;
+}
+
+.journal-table th:nth-child(5),
+.journal-table td:nth-child(5) {
+  width: 31%;
 }
 
 .journal-table th,
 .journal-table td {
-  height: 52px;
+  height: 56px;
   padding: 10px 12px;
+  overflow: hidden;
 }
 
 .journal-table td strong {
@@ -2545,7 +2689,12 @@ select:focus {
 }
 
 .points-input {
-  width: 76px;
+  width: 84px;
+}
+
+.journal-table td > input:not(.points-input) {
+  min-height: 38px;
+  font-size: 13px;
 }
 
 .journal-import-panel {
@@ -2677,6 +2826,20 @@ select:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .journal-access {
+    grid-template-columns: 1fr;
+  }
+
+  .journal-access-form,
+  .journal-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .journal-access-form .primary-button,
+  .journal-controls .journal-context {
+    grid-column: 1 / -1;
+  }
+
   .journal-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2781,8 +2944,8 @@ select:focus {
   }
 
   .campus-marker {
-    width: min(220px, 42%);
-    min-width: 146px;
+    width: var(--building-width);
+    min-width: 74px;
   }
 
   .auditorium-grid {
@@ -2948,6 +3111,14 @@ select:focus {
   .journal-controls {
     grid-template-columns: 1fr;
     width: 100%;
+  }
+
+  .journal-section-head {
+    flex-direction: column;
+  }
+
+  .journal-access-state {
+    max-width: 100%;
   }
 }
 

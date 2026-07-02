@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { fetchCampusBuildings, fetchCurrent, fetchSchedule, liveSocketUrl, parseLiveMessage, verifyTeacherAccess } from './api';
+import {
+  fetchCampusBuildings,
+  fetchCurrent,
+  fetchSchedule,
+  issueTeacherAccessKey,
+  liveSocketUrl,
+  parseLiveMessage,
+  verifyTeacherAccess,
+} from './api';
 import type { AuthSession } from './types';
 
 function apiSession(overrides: Partial<AuthSession> = {}): AuthSession {
@@ -69,6 +77,7 @@ describe('campus demo data', () => {
     expect(buildings).toHaveLength(13);
     expect(buildings.some((building) => building.code === 'K5' && building.roomRanges.includes('504-514'))).toBe(true);
     expect(buildings.some((building) => building.code === 'AUD' && building.roomRanges.includes('Л-4'))).toBe(true);
+    expect(buildings.some((building) => building.code === 'С' && building.name === 'Корпус С')).toBe(true);
   });
 
   it('does not invent attendance for future timetable dates', async () => {
@@ -88,9 +97,12 @@ describe('campus demo data', () => {
     expect(current.every((entry) => entry.occupancyPercent >= 0 && entry.occupancyPercent <= 100)).toBe(true);
   });
 
-  it('does not accept weak teacher journal keys in demo mode', async () => {
+  it('accepts only issued teacher journal keys in demo mode', async () => {
+    const session = apiSession({ demo: true, apiUrl: null });
+    const issued = await issueTeacherAccessKey(session, 1, 'test');
+
     const rejected = await verifyTeacherAccess(apiSession({ demo: true, apiUrl: null }), 1, 'short');
-    const accepted = await verifyTeacherAccess(apiSession({ demo: true, apiUrl: null }), 1, 'AULA-2026-secure');
+    const accepted = await verifyTeacherAccess(session, 1, issued.accessKey);
 
     expect(rejected.verified).toBe(false);
     expect(accepted.verified).toBe(true);

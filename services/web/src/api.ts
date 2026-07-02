@@ -14,12 +14,14 @@ import type {
   ScheduleEntry,
   ScheduleImportResult,
   TeacherAccessVerification,
+  TeacherKeyIssueResponse,
   TimelinePoint,
   UserView,
 } from './types';
 
 const runtimeConfigKey = 'audienceflow.runtime-config';
 const defaultApiUrl = normalizeApiUrl(import.meta.env.VITE_API_URL?.trim() ?? '');
+const demoTeacherKeyPrefix = 'AULA-DEMO';
 
 let demoRooms: Room[] = [
   { id: 1, name: 'Аудитория 305', building: 'Корпус 9', floor: '3', capacity: 64 },
@@ -34,7 +36,7 @@ let demoRooms: Room[] = [
   { id: 10, name: 'Л-1', building: 'Аудиторный корпус', floor: '1', capacity: 180 },
   { id: 11, name: 'Актовый зал', building: 'Административный корпус', floor: '1', capacity: 220 },
   { id: 12, name: 'Спортзал', building: 'Спортивный комплекс', floor: '1', capacity: 80 },
-  { id: 13, name: 'Корпус C · учебная аудитория', building: 'Корпус C', floor: '1', capacity: 40 },
+  { id: 13, name: 'Корпус С · учебная аудитория', building: 'Корпус С', floor: '1', capacity: 40 },
 ];
 
 let demoCameras: Camera[] = [
@@ -86,7 +88,7 @@ const demoBuildings: CampusBuilding[] = [
   campusBuilding(10, 'SPORT', 'Спортивный комплекс', 'Спортзал - 1 этаж, бассейн - 2 этаж', 36, 65, '#2E7D5B'),
   campusBuilding(11, 'CAFE', 'Деревяшка / ВРЕМЯКОФЕ', 'Деревяшка - 3 этаж, ВРЕМЯКОФЕ - 2 этаж', 38, 17, '#B4551A'),
   campusBuilding(12, 'B', 'Корпус Б', 'Отдельный учебный корпус', 72, 80, '#2F6F7A', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5'),
-  campusBuilding(13, 'C', 'Корпус C', 'Отдельный учебный корпус', 66, 86, '#8F420F', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5'),
+  campusBuilding(13, 'С', 'Корпус С', 'Отдельный учебный корпус', 66, 86, '#8F420F', '398600, Россия, г. Липецк, ул. Интернациональная, д. 5'),
 ];
 
 demoRooms = expandDemoCampusRooms(demoRooms, demoBuildings);
@@ -336,7 +338,7 @@ export async function verifyTeacherAccess(
 ): Promise<TeacherAccessVerification> {
   if (session.demo) {
     const teacher = demoDirectory.teachers.find((item) => item.id === teacherId);
-    const verified = isTeacherKeyShape(accessKey);
+    const verified = demoTeacherKeys.get(teacherId) === accessKey.trim();
     return {
       verified,
       teacherId,
@@ -346,6 +348,30 @@ export async function verifyTeacherAccess(
   return request<TeacherAccessVerification>('/teacher-journal/verify', {
     method: 'POST',
     body: JSON.stringify({ teacherId, accessKey }),
+  }, session);
+}
+
+export async function issueTeacherAccessKey(
+  session: AuthSession,
+  teacherId: number,
+  label: string,
+): Promise<TeacherKeyIssueResponse> {
+  if (session.demo) {
+    const teacher = demoDirectory.teachers.find((item) => item.id === teacherId);
+    if (!teacher) {
+      throw new Error('Преподаватель не найден');
+    }
+    const accessKey = generateDemoTeacherKey();
+    demoTeacherKeys.set(teacherId, accessKey);
+    return {
+      teacherId,
+      teacherName: teacher.name,
+      accessKey,
+    };
+  }
+  return request<TeacherKeyIssueResponse>('/teacher-journal/keys', {
+    method: 'POST',
+    body: JSON.stringify({ teacherId, label }),
   }, session);
 }
 
@@ -441,11 +467,6 @@ function demoCount(roomId: number, capacity: number): number {
   return Math.max(0, Math.min(capacity, Math.round(capacity * wave)));
 }
 
-function isTeacherKeyShape(value: string): boolean {
-  const compact = value.trim();
-  return compact.length >= 12 && /[A-Za-zА-Яа-я]/.test(compact) && /\d/.test(compact);
-}
-
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;
@@ -467,6 +488,23 @@ function normalizeScheduleEntry(item: ScheduleEntry): ScheduleEntry {
     ...item,
     occupancyPercent: item.occupancyPercent === null ? null : clampPercent(item.occupancyPercent),
   };
+}
+
+const demoTeacherKeys = new Map<number, string>();
+
+function generateDemoTeacherKey(): string {
+  const bytes = new Uint8Array(12);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  const body = Array.from(bytes, (value) => value.toString(36).padStart(2, '0').slice(-2))
+    .join('')
+    .toUpperCase();
+  return `${demoTeacherKeyPrefix}-${body.slice(0, 8)}-${body.slice(8, 16)}-${body.slice(16, 24)}`;
 }
 
 function expandDemoCampusRooms(baseRooms: Room[], buildings: CampusBuilding[]): Room[] {
